@@ -3,16 +3,17 @@ import wave
 import pyaudio
 import serial_asyncio
 import RPi.GPIO as GPIO
+import os
 from PIL import Image, ImageDraw
 from luma.core.interface.serial import spi
 from luma.lcd.device import st7789
+from itertools import cycle
 
-# Išjungiame įkyrius GPIO įspėjimus
 GPIO.setwarnings(False)
 
 class XGORobot:
     def __init__(self):
-        # 1. Ekrano konfigūracija
+        # 1. Ekranas (ST7789)
         try:
             self.serial_spi = spi(port=0, device=1, gpio_DC=24, gpio_RST=25)
             self.device = st7789(self.serial_spi, width=240, height=320, rotation=0)
@@ -21,77 +22,93 @@ class XGORobot:
             print(f"[ERROR] Ekranas: {e}")
             self.display_active = False
 
-        # 2. UART
+        # 2. Emocijų valdymas
+        self.assets_path = "src/assets"
+        self.current_emotion = "neutral"
+        self.frames = []
+        self._load_emotion_frames()
+
+        # 3. UART ir Audio
         self.uart_port = '/dev/serial0'
         self.uart_writer = None
-
-        # 3. Audio (Nustatyta 16000Hz, kas tinka I2S mikrofonams)
         self.audio = pyaudio.PyAudio()
         self.mic_index = 0 
 
-    def show_emotion(self, status_text, image_name="neutral.png"):
-        """Užkrauna paveikslėlį iš assets arba nupiešia tekstą, jei failo nėra"""
-        if not self.display_active: return
-        
+    def _load_emotion_frames(self):
+        """Užkrauna visus .png failus iš pasirinktos emocijos aplanko"""
+        folder = os.path.join(self.assets_path, self.current_emotion)
+        self.frames = []
         try:
-            # Bandome užkrauti EMO Pet vaizdą
-            img = Image.open(f"src/assets/{image_name}").convert("RGB")
-            img = img.resize((240, 320))
-        except:
-            # Jei paveikslėlio nėra, piešiame atsarginį vaizdą
-            img = Image.new("RGB", (240, 320), "black")
-            draw = ImageDraw.Draw(img)
-            draw.text((10, 150), f"MISSING: {image_name}", fill="red")
-            draw.text((10, 170), status_text, fill="white")
-        
-        self.device.display(img)
+            # Surikiuojame failus (0.png, 1.png...), kad animacija būtų teisinga
+            files = sorted([f for f in os.listdir(folder) if f.endswith('.png')])
+            for f in files:
+                img = Image.open(os.path.join(folder, f)).convert("RGB")
+                img = img.resize((240, 320))
+                self.frames.append(img)
+            print(f"[OK] Užkrauta emocija: {self.current_emotion} ({len(self.frames)} kadrai)")
+        except Exception as e:
+            print(f"[ERROR] Nepavyko užkrauti emocijos {self.current_emotion}: {e}")
+            # Atsarginis juodas rėmelis, jei neranda failų
+            self.frames = [Image.new("RGB", (240, 320), "black")]
+
+    def set_emotion(self, emotion_name):
+        """Pakeičia emociją ir užkrauna jos kadrus"""
+        if self.current_emotion != emotion_name:
+            self.current_emotion = emotion_name
+            self._load_emotion_frames()
+
+    async def animation_loop(self):
+        """Nuolatinis animacijos rodymas fone (neblokuojantis)"""
+        while self.display_active:
+            for frame in self.frames:
+                self.device.display(frame)
+                # Kadrų greitis (mažesnis skaičius = greitesnė animacija)
+                await asyncio.sleep(0.08) 
+            await asyncio.sleep(0.1)
 
     async def init_uart(self):
         try:
             _, self.uart_writer = await serial_asyncio.open_serial_connection(url=self.uart_port, baudrate=115200)
             self.uart_writer.write(b'\x00')
             await self.uart_writer.drain()
-            print(f"[OK] UART paruoštas.")
+            print("[OK] UART paruoštas.")
         except:
-            print(f"[ERROR] UART nepavyko.")
+            print("[ERROR] UART nepavyko.")
 
     def _record_audio_sync(self):
-        # ICS-43434 reikalauja specifinio dažnio (16000 arba 48000)
-        CHUNK, FORMAT, CHANNELS, RATE = 1024, pyaudio.paInt16, 1, 16000
+        CHUNK, RATE = 1024, 16000
         try:
-            stream = self.audio.open(format=FORMAT, channels=CHANNELS, rate=RATE,
+            stream = self.audio.open(format=pyaudio.paInt16, channels=1, rate=RATE,
                                      input=True, input_device_index=self.mic_index,
                                      frames_per_buffer=CHUNK)
-            frames = []
-            for _ in range(0, int(RATE / CHUNK * 3)):
-                frames.append(stream.read(CHUNK, exception_on_overflow=False))
-            stream.stop_stream()
-            stream.close()
+            frames = [stream.read(CHUNK, exception_on_overflow=False) for _ in range(0, int(RATE / CHUNK * 3))]
+            stream.stop_stream(); stream.close()
             with wave.open("src/test.wav", 'wb') as wf:
-                wf.setnchannels(CHANNELS); wf.setsampwidth(self.audio.get_sample_size(FORMAT)); wf.setframerate(RATE)
+                wf.setnchannels(1); wf.setsampwidth(self.audio.get_sample_size(pyaudio.paInt16)); wf.setframerate(RATE)
                 wf.writeframes(b''.join(frames))
             return True
-        except Exception as e:
-            print(f"[ERROR] Mikrofonas: {e}")
-            return False
+        except: return False
 
     async def main_loop(self):
         await self.init_uart()
-        self.show_emotion("SYSTEM READY", "neutral.png")
+        
+        # Paleidžiame animaciją kaip atskirą užduotį
+        asyncio.create_task(self.animation_loop())
         
         while True:
-            await asyncio.sleep(10)
-            print("[*] Įrašinėju...")
-            self.show_emotion("LISTENING", "recording.png")
+            # Robotas būna ramus
+            self.set_emotion("neutral")
+            await asyncio.sleep(8)
+            
+            # Robotas pradeda klausytis
+            print("[*] Klausausi...")
+            self.set_emotion("excited") # Pakeičiame akis į "excited" įrašymo metu
             
             loop = asyncio.get_running_loop()
-            success = await loop.run_in_executor(None, self._record_audio_sync)
+            await loop.run_in_executor(None, self._record_audio_sync)
             
-            if success:
-                self.show_emotion("DONE", "neutral.png")
-            else:
-                self.show_emotion("MIC ERROR", "error.png")
-            
+            # Po įrašymo parodome, kad pabaigėme
+            self.set_emotion("happy")
             await asyncio.sleep(2)
 
 if __name__ == "__main__":
