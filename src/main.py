@@ -4,94 +4,81 @@ import pyaudio
 import serial_asyncio
 import RPi.GPIO as GPIO
 import os
-import time
+import st7789
 from PIL import Image, ImageDraw
-from luma.core.interface.serial import spi
-from luma.lcd.device import st7789
 
-# --- KONFIGŪRACIJA (Griežtai pagal tavo pinuose) ---
+# --- APARATŪROS KONFIGŪRACIJA ---
+# Pagal tavo Pin -> GPIO suderinimą
+DC_PIN  = 24  # Pin 18
+RST_PIN = 25  # Pin 22
+CS_DEVICE = 0 # Pin 24 (GPIO 8 yra CE0)
+
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
-DC_PIN = 24
-RST_PIN = 25
-BL_PIN = 18  # Backlight
-CS_PIN = 7   # Tai yra CE1 (device 1)
 
 class XGORobot:
     def __init__(self):
-        self.display_active = False
-        self._init_hardware_display()
-        
-        # Emocijų kelias
+        # 1. EKRANAS: ST7789 TZT 2.0" setupas
+        try:
+            # Naudojame port=0, cs=0 (atitinka tavo Pin 24)
+            self.disp = st7789.ST7789(
+                port=0,
+                cs=CS_DEVICE, 
+                dc=DC_PIN,
+                rst=RST_PIN,
+                width=240,   
+                height=320,
+                rotation=90, # Gulsčias režimas (320x240)
+                spi_speed_hz=40000000
+            )
+            self.disp.begin()
+            # TZT ekranams dažnai reikia apversti spalvas
+            self.disp.set_inversion(True)
+            self.display_active = True
+            print("[OK] Ekranas paruoštas.")
+        except Exception as e:
+            print(f"[ERROR] Ekranas: {e}")
+            self.display_active = False
+
+        # 2. EMOCIJOS
         self.assets_path = "src/assets"
         self.current_emotion = "neutral"
         self.frames = []
         self._load_emotion_frames()
 
-        # Audio/UART nustatymai
+        # 3. AUDIO IR UART
         self.audio = pyaudio.PyAudio()
-        self.mic_index = 0
+        self.mic_index = 0 # Tavo Card 0 iš arecord -l
         self.uart_port = '/dev/serial0'
-
-    def _init_hardware_display(self):
-        """Fiziškai pažadiname ST7789 valdiklį"""
-        try:
-            print("[*] Vykdomas aparatūrinis ekrano RESET...")
-            GPIO.setup([DC_PIN, RST_PIN, BL_PIN], GPIO.OUT)
-            
-            # Fizinis RESET ciklas
-            GPIO.output(RST_PIN, GPIO.HIGH)
-            time.sleep(0.05)
-            GPIO.output(RST_PIN, GPIO.LOW)
-            time.sleep(0.1)
-            GPIO.output(RST_PIN, GPIO.HIGH)
-            time.sleep(0.1)
-            
-            # Įjungiam apšvietimą
-            GPIO.output(BL_PIN, GPIO.HIGH)
-
-            # SPI inicializacija: port=0, device=1 (CS7)
-            # baudrate sumažintas iki 4MHz - tai turi veikti net su prasčiausiais laidais
-            self.serial_spi = spi(port=0, device=1, gpio_DC=DC_PIN, gpio_RST=RST_PIN, baudrate=4000000)
-            
-            # Sukuriame įrenginį. rotation=1 (90 laipsnių)
-            self.device = st7789(self.serial_spi, width=240, height=320, rotation=1)
-            
-            self.display_active = True
-            print("[OK] Ekranas pažadintas sėkmingai.")
-        except Exception as e:
-            print(f"[ERROR] Ekranas: {e}")
 
     def _load_emotion_frames(self):
         folder = os.path.join(self.assets_path, self.current_emotion)
         self.frames = []
         try:
-            # Surenkame kadrus. Kadangi rotation=1, ekranas dabar yra 320x240
+            if not os.path.exists(folder): raise FileNotFoundError
             files = sorted([f for f in os.listdir(folder) if f.endswith('.png')])
             for f in files:
                 img = Image.open(os.path.join(folder, f)).convert("RGB")
+                # Kadangi ekranas dabar 320x240 (dėl rotation=90)
                 img = img.resize((320, 240))
                 self.frames.append(img)
             print(f"[OK] Užkrauta emocija: {self.current_emotion}")
         except:
-            # Jei failų nėra - RYŠKIAI BALTAS ekranas testui
-            print("[WARN] Emocijos nerastos. Naudojamas baltas testinis vaizdas.")
-            test_img = Image.new("RGB", (320, 240), "white")
-            draw = ImageDraw.Draw(test_img)
-            draw.text((100, 110), "EKRANAS GYVAS", fill="black")
+            # Jei neranda failų - RYŠKIAI ŽALIAS testas
+            test_img = Image.new("RGB", (320, 240), (0, 255, 0))
             self.frames = [test_img]
+            print("[WARN] Emocijų failai nerasti, rodomas testinis vaizdas.")
 
     async def animation_loop(self):
-        """Asinhroninis vaizdo atnaujinimas"""
-        print("[*] Pradedamas vaizdo išvedimas...")
+        """Nuolatinis vaizdo atnaujinimas"""
+        print("[*] Vaizdo išvedimas aktyvuotas.")
         while self.display_active:
             for frame in self.frames:
-                self.device.display(frame)
-                await asyncio.sleep(0.04)
+                self.disp.display(frame)
+                await asyncio.sleep(0.05) # ~20 FPS
 
     def _record_audio_sync(self):
-        """Saugaus dažnio garso įrašymas"""
-        # Pakeista į 16000, nes tai stabiliausias dažnis ICS-43434 mikrofonui ant CM4
+        """Garso įrašymas 16000Hz (stabiliausias CM4/I2S variantas)"""
         CHUNK, RATE = 1024, 16000
         try:
             stream = self.audio.open(format=pyaudio.paInt16, channels=1, rate=RATE, 
@@ -105,31 +92,29 @@ class XGORobot:
             print("[OK] Garsas įrašytas į src/test.wav")
             return True
         except Exception as e:
-            print(f"[ERROR] Audio: {e}")
+            print(f"[ERROR] Audio klaida: {e}")
             return False
 
     async def uart_task(self):
-        """UART ryšys su ESP32"""
+        """UART ryšys fone"""
         try:
             reader, writer = await serial_asyncio.open_serial_connection(url=self.uart_port, baudrate=115200)
-            print("[OK] UART ryšys paruoštas.")
+            print("[OK] UART ryšys aktyvus.")
             while True:
-                writer.write(b'\x00') # Gyvybės signalas važiuoklei
+                writer.write(b'\x00')
                 await writer.drain()
                 await asyncio.sleep(5)
-        except:
-            print("[ERROR] UART nepavyko.")
+        except: print("[ERROR] UART nepavyko prisijungti.")
 
     async def main_loop(self):
-        # 1. Paleidžiame animaciją
+        # Paleidžiame animaciją ir UART kaip atskiras užduotis
         asyncio.create_task(self.animation_loop())
-        # 2. Paleidžiame UART
         asyncio.create_task(self.uart_task())
         
-        # 3. Pagrindinis ciklas mikrofonui
         while True:
-            await asyncio.sleep(15)
-            print("[*] Mikrofonas: įrašinėju 2s...")
+            # Kas 30 sekundžių padarome kontrolinį įrašą
+            await asyncio.sleep(30)
+            print("[*] Mikrofonas: pradedamas 2s testinis įrašas...")
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._record_audio_sync)
 
@@ -139,4 +124,4 @@ if __name__ == "__main__":
         asyncio.run(robot.main_loop())
     except KeyboardInterrupt:
         GPIO.cleanup()
-        print("\nSistemos darbas nutrauktas.")
+        print("\nSustabdyta.")
