@@ -4,9 +4,8 @@ import pyaudio
 import serial_asyncio
 import RPi.GPIO as GPIO
 import os
+import st7789 # Naudojame šią biblioteką tiesioginiam valdymui
 from PIL import Image, ImageDraw
-from luma.core.interface.serial import spi
-from luma.lcd.device import st7789
 
 # Sistemos nustatymai
 GPIO.setwarnings(False)
@@ -15,16 +14,33 @@ BACKLIGHT_PIN = 18
 
 class XGORobot:
     def __init__(self):
-        # 1. EKRANAS (Naudojame luma.lcd stabilesniam darbui)
+        # 1. EKRANAS (Su specifiniais TZT 2.0" nustatymais)
         try:
+            # Įjungiam apšvietimą
             GPIO.setup(BACKLIGHT_PIN, GPIO.OUT)
             GPIO.output(BACKLIGHT_PIN, GPIO.HIGH)
 
-            # Inicijuojame be jokios rotacijos (0 deg), kad nebūtų klaidų
-            self.serial_spi = spi(port=0, device=1, gpio_DC=24, gpio_RST=25)
-            self.device = st7789(self.serial_spi, width=240, height=320, rotation=0)
+            # Inicijuojame su 'offset' pataisymais
+            # Dauguma 2.0" ST7789 modulių reikalauja šių nustatymų:
+            self.disp = st7789.ST7789(
+                port=0,
+                cs=1,         # CS7 (CE1)
+                dc=24,
+                rst=25,
+                width=240,
+                height=320,
+                rotation=90,  # Bandome vėl 90, jei mes klaidą - pakeisim į 0
+                spi_speed_hz=40000000 # Padidintas greitis sklandumui
+            )
+            
+            # TZT modulių specifika: rankinis inicijavimas
+            self.disp.begin()
+            
+            # Jei vaizdas vis tiek juodas, po .begin() pridedame spalvų inversiją
+            # self.disp.set_inversion(True) 
+            
             self.display_active = True
-            print("[OK] Ekranas paruoštas.")
+            print("[OK] Ekranas inicijuotas.")
         except Exception as e:
             print(f"[ERROR] Ekranas: {e}")
             self.display_active = False
@@ -45,28 +61,28 @@ class XGORobot:
         self.frames = []
         try:
             if not os.path.exists(folder): raise FileNotFoundError
+            # Surenkame .png failus
             files = sorted([f for f in os.listdir(folder) if f.endswith('.png')])
             for f in files:
                 img = Image.open(os.path.join(folder, f)).convert("RGB")
-                # Rankinis pasukimas: gulsčias vaizdas (320x240) pasukamas į stovintį (240x320)
+                # Kadangi ekranas 240x320 pasuktas 90 laipsnių, piešiame 320x240
                 img = img.resize((320, 240))
-                img = img.rotate(90, expand=True)
                 self.frames.append(img)
             print(f"[OK] Užkrauta emocija: {self.current_emotion}")
         except:
-            # Jei neranda failų - RYŠKIAI MĖLYNAS testas
-            test_img = Image.new("RGB", (320, 240), (0, 0, 255))
-            test_img = test_img.rotate(90, expand=True)
+            # Jei neranda failų - TESTINIS vaizdas, kad matytume ar ekranas veikia
+            test_img = Image.new("RGB", (320, 240), (255, 0, 0)) # RAUDONA
+            draw = ImageDraw.Draw(test_img)
+            draw.text((100, 110), "TEST: EKRANAS OK", fill="white")
             self.frames = [test_img]
-            print("[WARN] Emocijos nerastos, rodau mėlyną testą.")
+            print("[WARN] Emocijos nerastos, rodau raudoną testą.")
 
     async def animation_loop(self):
-        """Šis ciklas atsakingas tik už vaizdą"""
         print("[*] Animacijos ciklas paleistas.")
         while self.display_active:
             for frame in self.frames:
-                self.device.display(frame)
-                await asyncio.sleep(0.05)
+                self.disp.display(frame)
+                await asyncio.sleep(0.04) # 25 FPS
 
     def _record_audio_sync(self):
         CHUNK, RATE = 1024, 48000
@@ -79,15 +95,14 @@ class XGORobot:
             with wave.open("src/test.wav", 'wb') as wf:
                 wf.setnchannels(1); wf.setsampwidth(self.audio.get_sample_size(pyaudio.paInt16)); wf.setframerate(RATE)
                 wf.writeframes(b''.join(frames))
+            print("[OK] Garsas įrašytas.")
             return True
         except Exception as e:
             print(f"[ERROR] Audio: {e}")
             return False
 
     async def uart_task(self):
-        """UART ryšys atskiroje užduotyje, kad nepakibtų visas procesas"""
         try:
-            print("[*] Jungiamasi prie UART...")
             reader, writer = await serial_asyncio.open_serial_connection(url=self.uart_port, baudrate=115200)
             print("[OK] UART ryšys aktyvus.")
             while True:
@@ -98,16 +113,10 @@ class XGORobot:
             print(f"[ERROR] UART: {e}")
 
     async def main_loop(self):
-        # SVARBU: Pirmiausia paleidžiame vaizdą!
         asyncio.create_task(self.animation_loop())
-        
-        # Tada paleidžiame UART
         asyncio.create_task(self.uart_task())
-        
-        # Pagrindinis darbo ciklas (Audio)
         while True:
-            await asyncio.sleep(15)
-            print("[*] Mikrofonas testuojamas...")
+            await asyncio.sleep(20)
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._record_audio_sync)
 
