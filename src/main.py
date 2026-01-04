@@ -8,15 +8,25 @@ import st7789
 import google.generativeai as genai
 from PIL import Image, ImageDraw
 
-# --- KONFIGŪRACIJA ---
-# Įklijuok savo raktą čia:
-genai.configure(api_key="AIzaSyCuLuv_84LKXenr2Igo9Xbx1uvBj3u1_Ps")
-model = genai.GenerativeModel('gemini-1.5-flash')
+# --- SAUGUS RAKTO KROVIMAS ---
+def load_api_key():
+    try:
+        # Skaitome raktą iš vietinio failo, kuris nėra GitHub'e
+        with open(os.path.expanduser("~/robot-project/src/secrets.txt"), "r") as f:
+            return f.read().strip()
+    except Exception as e:
+        print(f"KLAIDA: Nepavyko rasti secrets.txt: {e}")
+        return None
 
-# Ekrano Pinai (Pin -> GPIO)
-# CS:Pin24(GPIO8), DC:Pin18(GPIO24), RST:Pin22(GPIO25)
+API_KEY = load_api_key()
+if API_KEY:
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    model = None
+
+# Ekrano Pinai
 DC_GPIO, RST_GPIO, CS_ID = 24, 25, 0
-
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
 
@@ -106,5 +116,6 @@ class EvilSonicRobot:
 if __name__ == "__main__":
     robot = EvilSonicRobot()
     asyncio.run(robot.main_loop())
+
 
 
