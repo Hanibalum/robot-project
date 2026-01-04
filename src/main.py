@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 
 # --- KONFIGŪRACIJA ---
 # Įklijuok savo raktą čia:
-genai.configure(api_key="TAVO_API_RAKTAS_CIA")
+genai.configure(api_key="AIzaSyCuLuv_84LKXenr2Igo9Xbx1uvBj3u1_Ps")
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # Ekrano Pinai (Pin -> GPIO)
@@ -106,4 +106,5 @@ class EvilSonicRobot:
 if __name__ == "__main__":
     robot = EvilSonicRobot()
     asyncio.run(robot.main_loop())
+
 
