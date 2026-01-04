@@ -4,66 +4,52 @@ import pyaudio
 import serial_asyncio
 import RPi.GPIO as GPIO
 import os
-import st7789
-import google.generativeai as genai
+import time
+import random
 from PIL import Image, ImageDraw
+from luma.core.interface.serial import spi
+from luma.lcd.device import st7789
 
-# --- SAUGUS RAKTO KROVIMAS ---
+# --- NAUJAS GOOGLE DI ---
+from google import genai
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 def load_api_key():
     try:
-        # Skaitome raktą iš vietinio failo, kuris nėra GitHub'e
-        with open(os.path.expanduser("~/robot-project/src/secrets.txt"), "r") as f:
+        with open(os.path.join(BASE_DIR, "secrets.txt"), "r") as f:
             return f.read().strip()
-    except Exception as e:
-        print(f"KLAIDA: Nepavyko rasti secrets.txt: {e}")
-        return None
+    except: return None
 
 API_KEY = load_api_key()
-if API_KEY:
-    genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-else:
-    model = None
+client = genai.Client(api_key=API_KEY) if API_KEY else None
 
-# Ekrano Pinai
+# Ekrano konfigūracija
 DC_GPIO, RST_GPIO, CS_ID = 24, 25, 0
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
 
 class EvilSonicRobot:
     def __init__(self):
-        # 1. Ekranas
         try:
-            from luma.core.interface.serial import spi
-            from luma.lcd.device import st7789 as st7789_luma
             serial_spi = spi(port=0, device=CS_ID, gpio_DC=DC_GPIO, gpio_RST=RST_GPIO)
-            self.device = st7789_luma(serial_spi, width=240, height=320, rotation=1)
+            self.device = st7789(serial_spi, width=240, height=320, rotation=1)
             self.device.set_inversion(True)
             self.display_active = True
-            print("[OK] Ekranas paruoštas.")
-        except:
-            self.display_active = False
+        except: self.display_active = False
 
-        # 2. Emocijos
-        self.assets_path = os.path.expanduser("~/robot-project/src/assets")
-        self.current_emotion = "neutral"
+        self.assets_path = os.path.join(BASE_DIR, "assets")
         self.frames = []
         self.last_ai_text = ""
         self._load_emotion("neutral")
-
-        # 3. Audio/UART
         self.audio = pyaudio.PyAudio()
-        self.mic_index = 0
-        self.uart_writer = None
 
     def _load_emotion(self, emotion):
         path = os.path.join(self.assets_path, emotion)
         try:
             files = sorted([f for f in os.listdir(path) if f.endswith('.png')])
             self.frames = [Image.open(os.path.join(path, f)).convert("RGB").resize((320, 240)) for f in files]
-            self.current_emotion = emotion
         except:
-            # Jei neranda Emo Pet failų, sukuriam raudonas Evil Sonic akis
             img = Image.new("RGB", (320, 240), "black")
             draw = ImageDraw.Draw(img)
             draw.ellipse((80, 80, 120, 160), fill="red")
@@ -71,8 +57,10 @@ class EvilSonicRobot:
             self.frames = [img]
 
     async def animation_loop(self):
+        """Šis ciklas NIEKADA neturi sustoti"""
+        print("[*] Animacija pradedama...")
         while self.display_active:
-            current_set = self.frames
+            current_set = list(self.frames) # Kopija saugumui
             for frame in current_set:
                 if self.last_ai_text:
                     canvas = frame.copy()
@@ -83,39 +71,45 @@ class EvilSonicRobot:
                     self.device.display(canvas)
                 else:
                     self.device.display(frame)
-                await asyncio.sleep(0.06)
+                await asyncio.sleep(0.05)
 
     async def ask_gemini(self, question):
+        if not client: 
+            self.last_ai_text = "API RAKTO KLAIDA"
+            return
+        
         self.last_ai_text = "MASTAU..."
         try:
-            prompt = f"Tu esi Evil Sonic. Atsakyk labai trumpai ir piktai: {question}"
-            response = await asyncio.to_thread(model.generate_content, prompt)
+            # Naujas Gemini API kvietimo būdas
+            prompt = f"Tu esi Evil Sonic. Atsakyk lietuviškai, trumpai ir grėsmingai: {question}"
+            response = await asyncio.to_thread(
+                client.models.generate_content, 
+                model="gemini-1.5-flash", 
+                contents=prompt
+            )
             self.last_ai_text = response.text.upper()
             await asyncio.sleep(8)
             self.last_ai_text = ""
-        except:
-            self.last_ai_text = "DI KLAIDA"
-
-    async def uart_task(self):
-        try:
-            reader, writer = await serial_asyncio.open_serial_connection(url='/dev/serial0', baudrate=115200)
-            self.uart_writer = writer
-            while True:
-                self.uart_writer.write(b'\x00')
-                await self.uart_writer.drain()
-                await asyncio.sleep(5)
-        except: print("UART klaida")
+        except Exception as e:
+            print(f"DI Klaida: {e}")
+            self.last_ai_text = "DI RYSIO KLAIDA"
 
     async def main_loop(self):
+        # Paleidžiame vaizdą
         asyncio.create_task(self.animation_loop())
-        asyncio.create_task(self.uart_task())
+        print("[OK] Sistema paruošta.")
+        
         while True:
-            await asyncio.sleep(25)
-            await self.ask_gemini("What are you thinking?")
+            # Čia bus balso įrašymas, dabar - ciklas
+            await asyncio.sleep(30)
+            await self.ask_gemini("Koks tavo planas?")
 
 if __name__ == "__main__":
     robot = EvilSonicRobot()
-    asyncio.run(robot.main_loop())
+    try:
+        asyncio.run(robot.main_loop())
+    except KeyboardInterrupt:
+        GPIO.cleanup()
 
 
 
