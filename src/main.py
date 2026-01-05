@@ -5,7 +5,7 @@ import RPi.GPIO as GPIO
 from PIL import Image, ImageDraw
 import st7789
 
-# --- KONTAKTAI (GPIO) ---
+# --- TAVO PINAI (FIZINIAI KONTAKTAI) ---
 DC_GPIO  = 24  # Pin 18
 RST_GPIO = 25  # Pin 22
 CS_DEVICE = 0  # Pin 24
@@ -13,7 +13,7 @@ CS_DEVICE = 0  # Pin 24
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
 
-class EvilSonicRescue:
+class EvilSonicGynimas:
     def __init__(self):
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.assets_path = os.path.join(self.base_dir, "assets", "neutral")
@@ -22,71 +22,59 @@ class EvilSonicRescue:
         # 1. HARDWARE RESET
         GPIO.setup(RST_GPIO, GPIO.OUT)
         GPIO.output(RST_GPIO, GPIO.LOW)
-        time.sleep(0.2)
+        time.sleep(0.1)
         GPIO.output(RST_GPIO, GPIO.HIGH)
-        time.sleep(0.2)
+        time.sleep(0.1)
 
         try:
-            # Paprasčiausia iniciacija be jokių offsetų, kad nemestų klaidų
+            # KONFIGŪRACIJA BE ROTACIJOS (kad nebūtų klaidų)
             self.disp = st7789.ST7789(
-                port=0, 
-                cs=CS_DEVICE, 
-                dc=DC_GPIO, 
-                rst=RST_GPIO,
-                width=240, 
-                height=320, 
-                rotation=90, 
+                port=0, cs=CS_DEVICE, dc=DC_GPIO, rst=RST_GPIO,
+                width=240, height=320, rotation=0, # Paliekam 0!
                 spi_speed_hz=8000000
             )
             self.disp.begin()
-            
-            # IŠBANDOME ABI INVERSIJOS BŪSENAS
             self.disp.set_inversion(True) 
-            
             self.display_active = True
-            print("[OK] Ekranas paleistas. Siunčiu BALTĄ testą...")
+            print("[OK] Ekranas inicijuotas sėkmingai.")
         except Exception as e:
             print(f"[FAIL] Ekranas: {e}")
-            self.display_active = False
 
         self.frames = []
-        self._load_frames()
+        self._load_and_rotate_frames()
 
-    def _load_frames(self):
+    def _load_and_rotate_frames(self):
+        """Užkrauna akis ir jas pasuka 90 laipsnių programiškai"""
         try:
-            # Sukuriame ryškų testinį vaizdą (BALTĄ), kad pamatytume ar ekranas veikia
-            test_img = Image.new("RGB", (320, 240), (255, 255, 255))
-            draw = ImageDraw.Draw(test_img)
-            draw.text((100, 110), "TESTAS: VEIKIA", fill=(255, 0, 0))
+            if not os.path.exists(self.assets_path):
+                raise Exception("Assets nerasti")
             
-            # Bandome užkrauti tavo akis
-            if os.path.exists(self.assets_path):
-                files = sorted([f for f in os.listdir(self.assets_path) if f.endswith('.png')])
-                if files:
-                    for f in files[:15]:
-                        img = Image.open(os.path.join(self.assets_path, f)).convert("RGB")
-                        img = img.resize((320, 240))
-                        self.frames.append(img)
-                    print(f"[OK] Užkrauta kadrų: {len(self.frames)}")
-            
-            if not self.frames:
-                self.frames = [test_img]
+            files = sorted([f for f in os.listdir(self.assets_path) if f.endswith('.png')])
+            for f in files[:20]: # Imam pirmus 20 kadrų
+                img = Image.open(os.path.join(self.assets_path, f)).convert("RGB")
+                # Sukeičiam dydį: nuotrauka 320x240 tampa 240x320 po pasukimo
+                img = img.resize((320, 240)) 
+                img = img.rotate(90, expand=True) 
+                self.frames.append(img)
+            print(f"[OK] Paruošta {len(self.frames)} kadrų.")
         except Exception as e:
-            print(f"Klaida: {e}")
-            self.frames = [Image.new("RGB", (320, 240), (255, 255, 255))]
+            print(f"[WARN] Klaida: {e}. Piešiu testinį vaizdą.")
+            # AVARINIS VAIZDAS (Mėlynas kvadratas)
+            img = Image.new("RGB", (320, 240), (0, 0, 255))
+            img = img.rotate(90, expand=True)
+            self.frames = [img]
 
-    async def run(self):
+    async def run_display(self):
         if not self.display_active: return
-        print("[*] Pradedamas vaizdo rodymas...")
+        print("[*] Rodau animaciją...")
         while True:
             for frame in self.frames:
                 self.disp.display(frame)
                 await asyncio.sleep(0.05)
 
 if __name__ == "__main__":
-    robot = EvilSonicRescue()
+    robot = EvilSonicGynimas()
     try:
-        asyncio.run(robot.run())
+        asyncio.run(robot.run_display())
     except KeyboardInterrupt:
         GPIO.cleanup()
-
