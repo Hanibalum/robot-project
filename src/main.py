@@ -2,14 +2,14 @@ import asyncio
 import os
 import RPi.GPIO as GPIO
 import time
-from PIL import Image, ImageDraw
+from PIL import Image
 from luma.core.interface.serial import spi
 from luma.lcd.device import st7789
 
-# --- TAVO PATVIRTINTI PINAI (GPIO) ---
+# --- TAVO PINAI ---
 DC_GPIO  = 24  # Pin 18
 RST_GPIO = 25  # Pin 22
-CS_DEVICE = 0  # Pin 24 (CE0)
+CS_DEVICE = 0  # Pin 24
 
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
@@ -20,25 +20,28 @@ class EvilSonicFinal:
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.assets_path = os.path.join(self.base_dir, "assets")
         
-        # 1. Fizinis ekrano perkrovimas (kad dingtų sniegas)
-        print("[*] Perkranu ekrano valdiklį...")
+        # 1. Fizinis RESET (SVARBU: Išvalo sniegą/triukšmą)
         GPIO.setup(RST_GPIO, GPIO.OUT)
         GPIO.output(RST_GPIO, GPIO.LOW)
-        time.sleep(0.2)
+        time.sleep(0.1)
         GPIO.output(RST_GPIO, GPIO.HIGH)
-        time.sleep(0.2)
+        time.sleep(0.1)
 
         try:
-            # 2. SPI inicializacija (Lėtas greitis = nulis triukšmo)
+            # 2. Inicijuojame SPI
             self.serial_spi = spi(port=0, device=CS_DEVICE, gpio_DC=DC_GPIO, gpio_RST=RST_GPIO, baudrate=8000000)
             
-            # 3. Įrenginio kūrimas (su TZT 2.0" specifika)
-            self.device = st7789(self.serial_spi, width=240, height=320, rotation=1)
-            self.device.set_inversion(True)
+            # 3. Sukuriame įrenginį (Luma ST7789)
+            # Naudojame rotate=1 (90 laipsnių)
+            self.device = st7789(self.serial_spi, width=240, height=320, rotate=1)
+            
+            # Pakeistas set_inversion į tiesioginę komandą (SVARBU TZT ekranams)
+            self.device.command(0x21) # INVON: Inversion On
+            
             self.display_active = True
-            print("[OK] Ekranas paruoštas be triukšmo.")
+            print("[OK] Ekranas paruoštas.")
         except Exception as e:
-            print(f"[ERROR] Ekranas: {e}")
+            print(f"[KLAIDA] Ekranas: {e}")
 
         self.frames = []
         self._load_emotion("neutral")
@@ -48,22 +51,23 @@ class EvilSonicFinal:
         try:
             files = sorted([f for f in os.listdir(path) if f.endswith('.png')])
             self.frames = [Image.open(os.path.join(path, f)).convert("RGB").resize((320, 240)) for f in files]
+            print(f"[OK] Užkrauta: {emotion}")
         except:
-            # Jei neranda failų, nupiešia bent žalią kvadratą (testui)
-            img = Image.new("RGB", (320, 240), (0, 255, 0))
+            # Jei neranda, sukuriam bent vieną spalvotą kadrą testui
+            img = Image.new("RGB", (320, 240), (0, 255, 0)) # Žalia
             self.frames = [img]
+            print(f"[WARN] Assets nerasti: {path}")
 
     async def animation_loop(self):
-        """Suka animaciją fone"""
         while self.display_active:
-            for frame in self.frames:
+            # Dirbame su kadrų kopija
+            current_set = list(self.frames)
+            for frame in current_set:
                 self.device.display(frame)
                 await asyncio.sleep(0.05)
 
     async def main_loop(self):
-        # Paleidžiame animaciją
         asyncio.create_task(self.animation_loop())
-        print("[OK] Sistema veikia.")
         while True:
             await asyncio.sleep(1)
 
