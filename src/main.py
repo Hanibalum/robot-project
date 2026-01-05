@@ -22,22 +22,25 @@ class EvilSonicGynimas:
         # 1. HARDWARE RESET
         GPIO.setup(RST_GPIO, GPIO.OUT)
         GPIO.output(RST_GPIO, GPIO.LOW)
-        time.sleep(0.2)
+        time.sleep(0.1)
         GPIO.output(RST_GPIO, GPIO.HIGH)
-        time.sleep(0.2)
+        time.sleep(0.1)
 
         try:
-            # KONFIGŪRACIJA: TZT 2.0" ekranams dažnai padeda 240x240 nustatymas 
-            # net jei ekranas yra 240x320 - tai panaikina triukšmą šone.
+            # Iniciuojame TIKSLIAI 240x320 be jokių rotacijų
             self.disp = st7789.ST7789(
                 port=0, cs=CS_DEVICE, dc=DC_GPIO, rst=RST_GPIO,
                 width=240, height=320, rotation=0, 
-                spi_speed_hz=4000000 # Mažas greitis užtikrina švarų vaizdą
+                spi_speed_hz=8000000
             )
             self.disp.begin()
-            self.disp.set_inversion(True)
+            
+            # Bandome įjungti inversiją per žemo lygio komandą (kad nemestų klaidos)
+            try: self.disp.command(0x21)
+            except: pass
+
             self.display_active = True
-            print("[OK] Ekranas paleistas. Valau triukšmą...")
+            print("[OK] Ekranas inicijuotas.")
         except Exception as e:
             print(f"[FAIL] {e}")
 
@@ -45,35 +48,31 @@ class EvilSonicGynimas:
         self._load_and_prepare_frames()
 
     def _load_and_prepare_frames(self):
-        """Užkrauna ir pasuka nuotraukas taip, kad jos uždengtų sniegą"""
+        """Užkrauna vaizdus ir rankiniu būdu sutvarko sniegą (Offset)"""
         try:
-            if not os.path.exists(self.assets_path): raise Exception("Nėra assets")
             files = sorted([f for f in os.listdir(self.assets_path) if f.endswith('.png')])
+            if not files: raise Exception("Tuscia")
             
             for f in files[:20]:
                 img = Image.open(os.path.join(self.assets_path, f)).convert("RGB")
-                # DAROME TRIPLE-FIX:
-                # 1. Rezaisinam į tikslų ekrano dydį
-                # 2. Pasukame 90 laipsnių
-                # 3. Išplečiame, kad uždengtų kraštus
-                img = img.resize((320, 240)) 
-                img = img.rotate(90, expand=True)
-                self.frames.append(img)
-            print(f"[OK] Paruošta kadrų: {len(self.frames)}")
+                # 1. Sukuriame juodą drobę (pilną valdiklio atmintį)
+                canvas = Image.new("RGB", (240, 320), (0, 0, 0))
+                # 2. Paruošiame akis (320x240) ir pasukame jas
+                eyes = img.resize((320, 240)).rotate(90, expand=True)
+                # 3. Įklijuojame akis į drobę, pastumdami jas nuo triukšmo zonos
+                # Jei sniegas yra apačioje, čia keičiame (0, 0) į (0, -80) arba (0, 80)
+                canvas.paste(eyes, (0, 0)) 
+                self.frames.append(canvas)
+            print(f"[OK] Paruošta: {len(self.frames)} kadrų.")
         except:
-            # Jei assets nėra, piešiam pilną juodą kadrą su raudonom akim
-            img = Image.new("RGB", (240, 320), (0, 0, 0))
-            d = ImageDraw.Draw(img)
-            d.ellipse((40, 80, 100, 140), fill=(255, 0, 0))
-            d.ellipse((140, 80, 200, 140), fill=(255, 0, 0))
+            # AVARINIS VAIZDAS: Jei niekas neveikia, bent jau matysime spalvą
+            img = Image.new("RGB", (240, 320), (255, 0, 0))
             self.frames = [img]
 
     async def run(self):
         if not self.display_active: return
         while True:
             for frame in self.frames:
-                # Siunčiame vaizdą. 
-                # TZT ekranai dažnai turi 35-80 pikselių "negyvą" zoną RAM atmintyje.
                 self.disp.display(frame)
                 await asyncio.sleep(0.05)
 
