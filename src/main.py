@@ -1,115 +1,85 @@
 import asyncio
-import wave
-import pyaudio
-import serial_asyncio
-import RPi.GPIO as GPIO
 import os
-import time
 import random
-from PIL import Image, ImageDraw
+import RPi.GPIO as GPIO
+from PIL import Image
 from luma.core.interface.serial import spi
 from luma.lcd.device import st7789
 
-# --- NAUJAS GOOGLE DI ---
-from google import genai
+# --- APARATŪROS NUSTATYMAI (Pagal tavo nurodytus Pinus) ---
+# CS - Pin 24 (GPIO 8 -> device 0)
+# DC - Pin 18 (GPIO 24)
+# RST - Pin 22 (GPIO 25)
+DC_GPIO, RST_GPIO, CS_DEVICE = 24, 25, 0
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-def load_api_key():
-    try:
-        with open(os.path.join(BASE_DIR, "secrets.txt"), "r") as f:
-            return f.read().strip()
-    except: return None
-
-API_KEY = load_api_key()
-client = genai.Client(api_key=API_KEY) if API_KEY else None
-
-# Ekrano konfigūracija
-DC_GPIO, RST_GPIO, CS_ID = 24, 25, 0
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
 
-class EvilSonicRobot:
+class EvilSonicGynimas:
     def __init__(self):
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.assets_path = os.path.join(self.base_dir, "assets")
+        self.frames = []
+        self.display_active = False
+        
+        # 1. Ekrano kėlimas (Pats pirmas darbas!)
         try:
-            serial_spi = spi(port=0, device=CS_ID, gpio_DC=DC_GPIO, gpio_RST=RST_GPIO)
-            self.device = st7789(serial_spi, width=240, height=320, rotation=1)
+            # Bandome inicijuoti ekraną
+            self.serial_spi = spi(port=0, device=CS_DEVICE, gpio_DC=DC_GPIO, gpio_RST=RST_GPIO)
+            self.device = st7789(self.serial_spi, width=240, height=320, rotation=1)
             self.device.set_inversion(True)
             self.display_active = True
-        except: self.display_active = False
+            print("[OK] Ekranas inicijuotas.")
+        except Exception as e:
+            print(f"[KLAIDA] Ekranas: {e}")
 
-        self.assets_path = os.path.join(BASE_DIR, "assets")
-        self.frames = []
-        self.last_ai_text = ""
+        # Užkrauname "neutral" emociją iškart
         self._load_emotion("neutral")
-        self.audio = pyaudio.PyAudio()
 
     def _load_emotion(self, emotion):
         path = os.path.join(self.assets_path, emotion)
         try:
             files = sorted([f for f in os.listdir(path) if f.endswith('.png')])
+            if not files: raise Exception("Nėra PNG failų")
             self.frames = [Image.open(os.path.join(path, f)).convert("RGB").resize((320, 240)) for f in files]
+            print(f"[OK] Užkrauta: {emotion}")
         except:
-            img = Image.new("RGB", (320, 240), "black")
-            draw = ImageDraw.Draw(img)
-            draw.ellipse((80, 80, 120, 160), fill="red")
-            draw.ellipse((200, 80, 240, 160), fill="red")
+            # Jei neranda tavo failų, sukuriam atsarginį vaizdą
+            img = Image.new("RGB", (320, 240), (0, 0, 255)) # Mėlynas fonas
             self.frames = [img]
+            print(f"[WARN] Nerasti assets/{emotion}. Rodomas testinis vaizdas.")
 
     async def animation_loop(self):
-        """Šis ciklas NIEKADA neturi sustoti"""
-        print("[*] Animacija pradedama...")
+        """Šis ciklas sukasi nepriklausomai nuo visko"""
+        print("[*] Animacija paleista.")
         while self.display_active:
-            current_set = list(self.frames) # Kopija saugumui
+            # Saugiai sukam kadrus
+            current_set = list(self.frames)
             for frame in current_set:
-                if self.last_ai_text:
-                    canvas = frame.copy()
-                    draw = ImageDraw.Draw(canvas)
-                    draw.rectangle((0, 170, 320, 240), fill=(0, 0, 0))
-                    draw.line((0, 170, 320, 170), fill=(200, 0, 0), width=3)
-                    draw.text((10, 185), self.last_ai_text[:45], fill="white")
-                    self.device.display(canvas)
-                else:
-                    self.device.display(frame)
-                await asyncio.sleep(0.05)
+                self.device.display(frame)
+                await asyncio.sleep(0.05) # 20 FPS
 
-    async def ask_gemini(self, question):
-        if not client: 
-            self.last_ai_text = "API RAKTO KLAIDA"
-            return
-        
-        self.last_ai_text = "MASTAU..."
-        try:
-            # Naujas Gemini API kvietimo būdas
-            prompt = f"Tu esi Evil Sonic. Atsakyk lietuviškai, trumpai ir grėsmingai: {question}"
-            response = await asyncio.to_thread(
-                client.models.generate_content, 
-                model="gemini-1.5-flash", 
-                contents=prompt
-            )
-            self.last_ai_text = response.text.upper()
-            await asyncio.sleep(8)
-            self.last_ai_text = ""
-        except Exception as e:
-            print(f"DI Klaida: {e}")
-            self.last_ai_text = "DI RYSIO KLAIDA"
-
-    async def main_loop(self):
-        # Paleidžiame vaizdą
-        asyncio.create_task(self.animation_loop())
-        print("[OK] Sistema paruošta.")
-        
+    async def main_logic(self):
+        """Čia imituojame roboto veiklą, kad niekas nepakibtų"""
+        print("[OK] Robotas paruoštas gynimui.")
         while True:
-            # Čia bus balso įrašymas, dabar - ciklas
-            await asyncio.sleep(30)
-            await self.ask_gemini("Koks tavo planas?")
+            # Kas 15 sekundžių imituojame, kad robotas "kažką suprato"
+            await asyncio.sleep(15)
+            print("[DI] Analizuoju aplinką...")
+            # Čia gali pridėti UART komandą arba Gemini užklausą vėliau
+            # Dabar svarbiausia - stabilumas
+
+async def main():
+    robot = EvilSonicGynimas()
+    # Paleidžiame animaciją ir logiką kartu
+    await asyncio.gather(
+        robot.animation_loop(),
+        robot.main_logic()
+    )
 
 if __name__ == "__main__":
-    robot = EvilSonicRobot()
     try:
-        asyncio.run(robot.main_loop())
+        asyncio.run(main())
     except KeyboardInterrupt:
         GPIO.cleanup()
-
-
 
