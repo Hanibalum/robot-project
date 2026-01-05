@@ -1,87 +1,88 @@
-import time
-import os
 import RPi.GPIO as GPIO
-from PIL import Image, ImageDraw
-import st7789
+import time
+import spidev
+from PIL import Image
 
-# --- TAVO FIZINIAI KONTAKTAI ---
-# Pin 24 (CS) -> cs=0
-# Pin 18 (DC) -> GPIO 24
+# --- TAVO PATIKRINTI PINAI (Fiziniai -> GPIO) ---
+# Pin 24 (CS)  -> GPIO 8 (CE0)
+# Pin 18 (DC)  -> GPIO 24
 # Pin 22 (RST) -> GPIO 25
-DC_PIN  = 24
-RST_PIN = 25
-CS_PIN  = 0 
+DC = 24
+RST = 25
 
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
+GPIO.setup([DC, RST], GPIO.OUT)
 
-class EvilSonicRescue:
+class TZT_Display:
     def __init__(self):
-        print("[*] REANIMACIJA: Pažadinimo komandos siunčiamos...")
+        self.spi = spidev.SpiDev()
+        self.spi.open(0, 0)
+        self.spi.max_speed_hz = 40000000 # 40MHz
+        self.spi.mode = 0b11 # Mode 3 dažnai padeda TZT ekranams
+
+    def write_cmd(self, cmd):
+        GPIO.output(DC, GPIO.LOW)
+        self.spi.writebytes([cmd])
+
+    def write_data(self, data):
+        GPIO.output(DC, GPIO.HIGH)
+        if isinstance(data, int): data = [data]
+        self.spi.writebytes(data)
+
+    def init(self):
+        # Fizinis Reset
+        GPIO.output(RST, GPIO.LOW)
+        time.sleep(0.1)
+        GPIO.output(RST, GPIO.HIGH)
+        time.sleep(0.1)
+
+        self.write_cmd(0x01) # Software reset
+        time.sleep(0.15)
+        self.write_cmd(0x11) # Sleep out
+        time.sleep(0.1)
         
-        # 1. Fizinis RESET (Ilgas, kad valdiklis tikrai persikrautų)
-        GPIO.setup(RST_PIN, GPIO.OUT)
-        GPIO.output(RST_PIN, GPIO.LOW)
-        time.sleep(0.5)
-        GPIO.output(RST_PIN, GPIO.HIGH)
-        time.sleep(0.5)
+        # TZT 2.0" specifiniai spalvų ir atminties nustatymai
+        self.write_cmd(0x3A) ; self.write_data(0x05) # 16-bit color
+        self.write_cmd(0x36) ; self.write_data(0x00) # MADCTL
+        self.write_cmd(0x21) # Inversion ON
+        self.write_cmd(0x29) # Display ON
+        print("[OK] Ekranas pažadintas rankiniu būdu.")
 
-        try:
-            # 2. Inicijuojame be jokių automatinių rotacijų
-            self.disp = st7789.ST7789(
-                port=0, 
-                cs=CS_PIN, 
-                dc=DC_PIN, 
-                rst=RST_PIN, 
-                width=240, 
-                height=320, 
-                rotation=0, 
-                spi_speed_hz=4000000 
-            )
-            self.disp.begin()
-            
-            # --- AGRESYVUS PAŽADINIMAS (Tiesioginės instrukcijos) ---
-            self.disp.command(0x11) # Sleep out (Išeiti iš miego)
-            time.sleep(0.1)
-            self.disp.command(0x21) # Inversion ON (Kad juoda būtų juoda)
-            self.disp.command(0x29) # Display ON (Įjungti vaizdą)
-            
-            print("[OK] Valdiklis pažadintas.")
-        except Exception as e:
-            print(f"[FAIL] Klaida: {e}")
-
-        self.assets_path = os.path.join(os.path.dirname(__file__), "assets", "neutral")
-        self.frames = []
-        self._load_emergency_frame()
-
-    def _load_emergency_frame(self):
-        """Sukuriam ryškų vaizdą, kurį matytum net pro 'sniegą'"""
-        # RAUDONAS kvadratas per visą centrą
-        img = Image.new("RGB", (240, 320), (255, 0, 0))
-        d = ImageDraw.Draw(img)
-        d.rectangle((40, 40, 200, 280), outline="white", fill="white")
-        d.text((60, 150), "SPI OK: LAUKIU", fill="red")
+    def show(self, image):
+        # Paruošiam vaizdą išvedimui
+        img = image.resize((240, 320)).rotate(90, expand=True)
+        pixel_data = []
+        # Konvertuojame į RGB565 (2 baitai per pikselį)
+        rgb888 = img.convert("RGB")
+        for y in range(img.height):
+            for x in range(img.width):
+                r, g, b = rgb888.getpixel((x, y))
+                color = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+                pixel_data.append(color >> 8)
+                pixel_data.append(color & 0xFF)
         
-        # Bandome įkelti bent vieną tavo nuotrauką pasuktą
-        try:
-            files = [f for f in os.listdir(self.assets_path) if f.endswith('.png')]
-            if files:
-                eye = Image.open(os.path.join(self.assets_path, files[0])).convert("RGB")
-                eye = eye.resize((320, 240)).rotate(90, expand=True)
-                self.frames.append(eye)
-        except:
-            pass
-            
-        if not self.frames:
-            self.frames = [img]
-
-    def run(self):
-        print("[*] Siunčiu duomenis... Žiūrėk į ekraną!")
-        while True:
-            for frame in self.frames:
-                self.disp.display(frame)
-                time.sleep(0.1)
+        # Siunčiame į RAM
+        self.write_cmd(0x2A) # Column address
+        self.write_data([0, 0, 0, 239])
+        self.write_cmd(0x2B) # Row address
+        self.write_data([0, 0, 1, 63])
+        self.write_cmd(0x2C) # Memory write
+        
+        # Siunčiame dalimis, kad spidev neužspringtų
+        chunk_size = 4096
+        GPIO.output(DC, GPIO.HIGH)
+        for i in range(0, len(pixel_data), chunk_size):
+            self.spi.writebytes(pixel_data[i:i+chunk_size])
 
 if __name__ == "__main__":
-    robot = EvilSonicRescue()
-    robot.run()
+    try:
+        tzt = TZT_Display()
+        tzt.init()
+        # Sukuriam bandomąjį kadrą (MĖLYNAS)
+        img = Image.new("RGB", (320, 240), (0, 0, 255))
+        print("[*] Siunčiu MĖLYNĄ spalvą...")
+        tzt.show(img)
+        print("[SĖKMĖ] Jei matai mėlyną spalvą - ekranas veikia!")
+    except KeyboardInterrupt:
+        GPIO.cleanup()
