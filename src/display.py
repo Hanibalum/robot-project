@@ -13,18 +13,21 @@ class EvilSonicDisplay:
         self.frames = {}
         self.frame_counter = 0
         
-        # PINAI (Pin 18->24, Pin 22->25)
-        self.DC, self.RST = 24, 25
+        # Tavo pinai (GPIO)
+        self.DC = 24  # Pin 18
+        self.RST = 25 # Pin 22
+        
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         GPIO.setup([self.DC, self.RST], GPIO.OUT)
 
+        # SPI setupas (tas, kuris veike melynai spalvai)
         self.spi = spidev.SpiDev()
         self.spi.open(0, 0)
-        self.spi.max_speed_hz = 16000000 # 16MHz saugiau nei 40MHz
+        self.spi.max_speed_hz = 40000000 
         self.spi.mode = 0b11 
         
-        self.init_hw()
+        self.init_hardware()
         self.load_assets()
 
     def write_cmd(self, cmd):
@@ -36,17 +39,19 @@ class EvilSonicDisplay:
         if isinstance(data, int): data = [data]
         self.spi.writebytes(data)
 
-    def init_hw(self):
-        # HARDWARE RESET
-        GPIO.output(self.RST, GPIO.LOW); time.sleep(0.2); GPIO.output(self.RST, GPIO.HIGH); time.sleep(0.2)
-        self.write_cmd(0x01); time.sleep(0.15) # SW Reset
-        self.write_cmd(0x11); time.sleep(0.1)  # Sleep Out
-        self.write_cmd(0x3A); self.write_data(0x05) # 16-bit
-        self.write_cmd(0x36); self.write_data(0x00) # MADCTL
-        self.write_cmd(0x21) # Inversion ON (TZT butina)
+    def init_hardware(self):
+        """Tikslus TZT 2.0 inicijavimo kodas"""
+        GPIO.output(self.RST, GPIO.LOW); time.sleep(0.1); GPIO.output(self.RST, GPIO.HIGH); time.sleep(0.1)
+        self.write_cmd(0x01); time.sleep(0.15) # SW reset
+        self.write_cmd(0x11); time.sleep(0.1)  # Sleep out
+        self.write_cmd(0x3A); self.write_data(0x05) # 16-bit color
+        self.write_cmd(0x36); self.write_data(0x00) # Orientation
+        self.write_cmd(0x21) # Inversion ON
         self.write_cmd(0x29) # Display ON
+        print("[OK] Ekranas pazadintas 'Raw SPI' rezimu.")
 
     def load_assets(self):
+        """Krauname Sonic emocijas ir konvertuojame i RGB565 (greiciausias formatas)"""
         states = ["static", "speaking", "angry", "laughing", "shook"]
         for state in states:
             self.frames[state] = []
@@ -54,35 +59,42 @@ class EvilSonicDisplay:
             if os.path.exists(path):
                 files = sorted([f for f in os.listdir(path) if f.endswith(".png")])
                 for f in files:
-                    img = Image.open(os.path.join(path, f)).convert("RGB")
-                    img = img.resize((320, 240)).rotate(90, expand=True)
-                    img_data = np.array(img).astype(np.uint16)
-                    # Konvertuojam į RGB565 formatą
-                    color = ((img_data[:,:,0] & 0xF8) << 8) | ((img_data[:,:,1] & 0xFC) << 3) | (img_data[:,:,2] >> 3)
-                    pixel_bytes = np.stack(((color >> 8).astype(np.uint8), (color & 0xFF).astype(np.uint8)), axis=-1).tobytes()
-                    self.frames[state].append(pixel_bytes)
+                    try:
+                        img = Image.open(os.path.join(path, f)).convert("RGB")
+                        # Pritaikome tavo ekranui: gulsčias 320x240 pasuktas i 240x320
+                        img = img.resize((240, 320)).rotate(90, expand=True)
+                        img_data = np.array(img).astype(np.uint16)
+                        # RGB888 -> RGB565 konversija (tikslus inzinierinis metodas)
+                        color = ((img_data[:,:,0] & 0xF8) << 8) | ((img_data[:,:,1] & 0xFC) << 3) | (img_data[:,:,2] >> 3)
+                        pixel_bytes = np.stack(((color >> 8).astype(np.uint8), (color & 0xFF).astype(np.uint8)), axis=-1).tobytes()
+                        self.frames[state].append(pixel_bytes)
+                    except: pass
+            
             if not self.frames[state]:
-                # Jei nėra nuotraukų - darysim RAUDONĄ kvadratą testui
-                red_buf = [0xF8, 0x00] * (240 * 320)
-                self.frames[state] = [bytes(red_buf)]
+                # Jei nera assets - darysim RAUDONA kadrą (kad matytume gyvybę)
+                red_pixels = [0xF8, 0x00] * (240 * 320)
+                self.frames[state] = [bytes(red_pixels)]
 
-    def show_raw(self, pixel_bytes):
-        self.write_cmd(0x2A); self.write_data([0, 0, 0, 239])
-        self.write_cmd(0x2B); self.write_data([0, 0, 1, 63])
-        self.write_cmd(0x2C) 
+    def draw_frame(self, pixel_bytes):
+        """Siunciame duomenis i VRAM (Be jokiu 'busy' klaidu)"""
+        self.write_cmd(0x2A); self.write_data([0, 0, 0, 239]) # X range
+        self.write_cmd(0x2B); self.write_data([0, 0, 1, 63])  # Y range
+        self.write_cmd(0x2C) # Memory write
         GPIO.output(self.DC, GPIO.HIGH)
+        # Skaidome i blokus po 4KB (SPI limitas)
         for i in range(0, len(pixel_bytes), 4096):
             self.spi.writebytes(list(pixel_bytes[i:i+4096]))
 
     async def animate(self):
-        print("[*] Animacija paleista...")
+        print("[*] Animacija paleista.")
         while True:
             frames = self.frames.get(self.current_state, [])
             if frames:
                 data = frames[self.frame_counter % len(frames)]
-                await asyncio.to_thread(self.show_raw, data)
+                # Naudojame to_thread, kad SPI duomenys nesustabdytu kito kodo
+                await asyncio.to_thread(self.draw_frame, data)
                 self.frame_counter += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04) # 25 FPS
 
     def set_state(self, new_state):
         if new_state in self.frames and new_state != self.current_state:
