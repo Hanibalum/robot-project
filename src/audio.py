@@ -42,14 +42,12 @@ class AudioBrain:
         await asyncio.sleep(duration)
         return "Simulated audio content"
 
-    async def send_to_gemini(self, audio_data):
+    async def send_to_gemini_pro(self, audio_data):
         if not self.ai_model: return "No AI Model available."
         
         self.logger.info("Užklausa į Gemini...")
-        prompt = "Tu esi Evil Sonic. Atsakyk labai trumpai (iki 10 žodžių), grėsmingai ir lietuviškai į klausimą: Koks tavo planas?"
-        
-        try:
-            response = await asyncio.to_thread(self.ai_model.generate_content, prompt)
-            return response.text
-        except Exception as e:
-            return f"KLAIDA: {e}"
+        prompt = "Tu esi Evil Sonic. Atsakyk trumpai ir grėsmingai lietuviškai."
+        response = await asyncio.to_thread(self.ai_model.generate_content, prompt)
+        return response.text
+    except Exception as e:
+        return f"KLAIDA: {e}"
