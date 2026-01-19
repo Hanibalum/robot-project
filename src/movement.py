@@ -1,63 +1,61 @@
-try:
-    from xgolib import XGO
-except ImportError:
-    pass
-
 import asyncio
 import logging
 import random
 
+# Saugus importas: jei bibliotekos nėra, programa nenulūš
+try:
+    from xgolib import XGO
+    XGO_AVAILABLE = True
+except ImportError:
+    XGO_AVAILABLE = False
+
 class XgoController:
     def __init__(self):
-        # Initialize XGO library
-        # Assuming typical UART setup on /dev/ttyAMA0 or similar, but xgolib usually handles defaults
-        # or takes a port.
-        self.robot = XGO(port='/dev/ttyAMA0') 
-        self.last_heartbeat = 0
         self.logger = logging.getLogger("XgoController")
+        self.port = '/dev/ttyAMA0'
+        self.robot = None
+
+        if XGO_AVAILABLE:
+            try:
+                # Inicijuojame ryšį su ESP32 važiuokle
+                self.robot = XGO(port=self.port)
+                self.logger.info(f"Važiuoklė sėkmingai prijungta per {self.port}")
+            except Exception as e:
+                self.logger.error(f"Nepavyko prisijungti prie važiuoklės: {e}")
+        else:
+            self.logger.warning("xgolib biblioteka nerasta. Robotas veiks simuliacijos režimu.")
 
     async def heartbeat(self):
-        """Sends a keep-alive signal to the robot every 5 seconds."""
-        self.logger.info("Heartbeat task started.")
+        """Siunčia kontrolinį signalą kas 5 sekundes"""
+        self.logger.info("Heartbeat užduotis paleista.")
         while True:
             try:
-                # Assuming sending a command resets the watchdog or there is a specific heartbeat cmd
-                # If no specific heartbeat, just reading status or a small move helps
-                # Prompt says: "Kas 5s siųsti Heartbeat (gyvybės signalą) per xgolib."
-                # We will assume a method like 'action(0)' or similar exists, or just verify connection.
-                # Usually accessing battery or version is a good heartbeat.
-                # Let's assume a generic ping or status read if explicit heartbeat isn't in API docs provided.
-                # I'll use a placeholder 'reset' or 'stop' which is usually safe, or just logging.
-                # Ideally, we send a neutral command.
-                
-                # Mock call
-                self.robot.action(0) # 0 is often 'stand' or 'reset' in some robot libs
-                
-                self.logger.debug("Heartbeat sent.")
+                if self.robot:
+                    # Siunčiame bazinę komandą (pvz., baterijos būsenos nuskaitymą), 
+                    # kad palaikytume UART ryšį aktyvų
+                    self.robot.read_battery() 
             except Exception as e:
-                self.logger.error(f"Heartbeat failed: {e}")
+                self.logger.error(f"Heartbeat klaida: {e}")
             
             await asyncio.sleep(5)
 
     def perform_action(self, emotion):
-        """Triggers physical movement based on emotion."""
-        self.logger.info(f"Performing action for: {emotion}")
+        """Fizinis judesys pagal emociją"""
+        if not self.robot:
+            self.logger.info(f"[SIMULIACIJA] Judesys emocijai: {emotion}")
+            return
+
+        self.logger.info(f"Vykdomas judesys: {emotion}")
         try:
             if emotion == "angry":
-                # Robot pitch forward (aggressive)
-                self.robot.pitch(15)
+                self.robot.pitch(15) # Pasilenkia į priekį
             elif emotion == "laughing":
-                # Robot nod or dance
-                self.robot.action(4) # Assuming 4 is a preset action like 'shake'
+                self.robot.action(4) # Šokinėjimas / šokis
             elif emotion == "shook":
-                # Slight tilt or random twitch
-                self.robot.roll(random.randint(-5, 5))
+                self.robot.roll(10)  # Susvyravimas į šoną
             elif emotion == "speaking":
-                 # Maybe slight movement while talking?
-                 pass
+                self.robot.pitch(5)  # Lengvas judesys kalbant
             else:
-                # Return to neutral (static/IDLE)
-                self.robot.pitch(0)
-                self.robot.roll(0)
+                self.robot.reset()   # Grįžta į pradinę padėtį (IDLE)
         except Exception as e:
-            self.logger.error(f"Action failed: {e}")
+            self.logger.error(f"Judesio klaida: {e}")
