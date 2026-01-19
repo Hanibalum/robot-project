@@ -1,93 +1,119 @@
-import RPi.GPIO as GPIO
-import time
-import spidev
+import sys
 import os
-from PIL import Image
+import asyncio
+import logging
 
-# --- KONTAKTAI (TAVO PATIKRINTI) ---
-DC = 24
-RST = 25
-GPIO.setwarnings(False)
-GPIO.setmode(GPIO.BCM)
-GPIO.setup([DC, RST], GPIO.OUT)
+# Add src to path
+sys.path.append(os.path.join(os.getcwd(), 'src'))
 
-class TZT_Display:
-    def __init__(self):
-        self.spi = spidev.SpiDev()
-        self.spi.open(0, 0)
-        self.spi.max_speed_hz = 40000000 
-        self.spi.mode = 0b11 
-
-    def write_cmd(self, cmd):
-        GPIO.output(DC, GPIO.LOW)
-        self.spi.writebytes([cmd])
-
-    def write_data(self, data):
-        GPIO.output(DC, GPIO.HIGH)
-        if isinstance(data, int): data = [data]
-        self.spi.writebytes(data)
-
-    def init(self):
-        GPIO.output(RST, GPIO.LOW)
-        time.sleep(0.1)
-        GPIO.output(RST, GPIO.HIGH)
-        time.sleep(0.1)
-        self.write_cmd(0x01) # Reset
-        time.sleep(0.15)
-        self.write_cmd(0x11) # Sleep out
-        time.sleep(0.1)
-        self.write_cmd(0x3A) ; self.write_data(0x05) 
-        self.write_cmd(0x36) ; self.write_data(0x00) 
-        self.write_cmd(0x21) # Inversion ON
-        self.write_cmd(0x29) # Display ON
-        print("[OK] Ekranas paruoštas.")
-
-    def show(self, pil_img):
-        # Pritaikome vaizdą tavo ekranui
-        img = pil_img.resize((240, 320)).rotate(90, expand=True)
-        rgb888 = img.convert("RGB")
-        pixel_data = []
-        # Greita konversija į RGB565 formatą
-        for y in range(img.height):
-            for x in range(img.width):
-                r, g, b = rgb888.getpixel((x, y))
-                color = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-                pixel_data.append(color >> 8)
-                pixel_data.append(color & 0xFF)
-        
-        self.write_cmd(0x2A) ; self.write_data([0, 0, 0, 239])
-        self.write_cmd(0x2B) ; self.write_data([0, 0, 1, 63])
-        self.write_cmd(0x2C) 
-        
-        GPIO.output(DC, GPIO.HIGH)
-        chunk_size = 4096
-        for i in range(0, len(pixel_data), chunk_size):
-            self.spi.writebytes(pixel_data[i:i+chunk_size])
-
-# --- PAGRINDINĖ PROGRAMA ---
-def run_robot():
-    tzt = TZT_Display()
-    tzt.init()
-    
-    # Kelias iki tavo nuotraukų
-    assets_dir = os.path.join(os.path.dirname(__file__), "assets", "neutral")
-    
+# Try to import mocks only if specifically requested (DEV MODE)
+# This prevents mocks from disabling real hardware on the robot
+if os.environ.get("EVIL_SONIC_ENV") == "dev":
     try:
-        files = sorted([f for f in os.listdir(assets_dir) if f.endswith('.png')])
-        if not files:
-            print("[KLAIDA] Nerasta nuotraukų aplanke assets/neutral")
-            return
-        
-        print(f"[*] Pradedama animacija ({len(files)} kadrų)...")
-        while True:
-            for f in files:
-                img = Image.open(os.path.join(assets_dir, f))
-                tzt.show(img)
-                # Greitis - gali pareguliuoti (0.02 bus labai greitai, 0.05 normaliai)
-                time.sleep(0.04) 
+        import mocks
+        logging.getLogger("Main").warning("Running in DEV mode with MOCKS enabled.")
+    except ImportError:
+        pass
+
+from display import EvilSonicDisplay
+from movement import XgoController
+from audio import AudioBrain
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("Main")
+
+async def main():
+    logger.info("Initializing Evil Sonic...")
+    
+    # Initialize modules
+    display = EvilSonicDisplay()
+    controller = XgoController()
+    brain = AudioBrain()
+    
+    # Start background tasks
+    # 1. Heartbeat - CRITICAL PRIORITY
+    heartbeat_task = asyncio.create_task(controller.heartbeat())
+    
+    # 2. Display Animation
+    display_task = asyncio.create_task(display.animate())
+    
+    # 3. Main Logic Loop (Audio -> AI -> Action)
+    try:
+        # Start listening loop
+        async for _ in brain.monitor_wake_word():
+            logger.info("Wake word detected!")
+            
+            # State: SPEAKING (Used as "Active/Listening" indicator)
+            # We default to 'speaking' or 'static' when active.
+            display.set_state("speaking")
+            
+            # Record Audio
+            audio_data = await brain.record_audio(duration=3)
+            
+            # State: SHOOK (Used for "Thinking/Processing")
+            display.set_state("shook")
+            controller.perform_action("THINKING") 
+            
+            try:
+                # Send to Cloud
+                response_text = await brain.send_to_gemini(audio_data)
+                logger.info(f"Gemini response: {response_text}")
                 
-    except Exception as e:
-        print(f"Klaida: {e}")
+                # Analyze sentiment & Map to Valid Emotions
+                lower_text = response_text.lower()
+                
+                # Default emotion
+                emotion = "speaking"
+                
+                if "evil" in lower_text or "angry" in lower_text or "destroy" in lower_text:
+                    emotion = "angry"
+                elif "happy" in lower_text or "funny" in lower_text or "laugh" in lower_text:
+                    emotion = "laughing"
+                elif "confused" in lower_text or "what" in lower_text or "shook" in lower_text:
+                    emotion = "shook"
+                
+                # 1. Reaction Phase (if not just speaking)
+                if emotion != "speaking":
+                    display.set_state(emotion)
+                    controller.perform_action(emotion) # Sync movement
+                    # Hold the reaction for a moment
+                    await asyncio.sleep(2)
+                
+                # 2. TTS Phase (Speaking)
+                display.set_state("speaking")
+                # await tts_speak(response_text)
+                await asyncio.sleep(3) # Simulate TTS duration
+                
+                # 3. Return to Idle (Static)
+                display.set_state("static")
+                controller.perform_action("IDLE")
+                
+            except Exception as e:
+                logger.error(f"Error during AI processing: {e}")
+                
+                # ERROR STATE -> Map to "shook" (Confused/Error)
+                display.set_state("shook")
+                controller.perform_action("EVIL_GLITCH") # Movement can still twitch
+                
+                # Recover after some time
+                await asyncio.sleep(3)
+                display.set_state("static")
+                controller.perform_action("IDLE")
+                
+    except asyncio.CancelledError:
+        logger.info("Main loop cancelled.")
+    finally:
+        # Clean up
+        heartbeat_task.cancel()
+        display_task.cancel()
+        logger.info("Evil Sonic shutting down.")
 
 if __name__ == "__main__":
-    run_robot()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
