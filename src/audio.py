@@ -12,7 +12,7 @@ class AudioBrain:
     def __init__(self, model_path="/home/cm4/robot-project/src/model"):
         self.logger = logging.getLogger("AudioBrain")
         
-        # 1. Gemini API konfigūravimas (Naujas SDK)
+        # 1. Gemini API konfigūravimas
         try:
             key_path = os.path.join(BASE_DIR, "secrets.txt")
             with open(key_path, "r") as f:
@@ -32,31 +32,29 @@ class AudioBrain:
             self.recognizer = None
 
     async def monitor_wake_word(self):
-        """Gynimo režimas: imituojame balso aktyvavimą kas 20s"""
+        """Imituojame balso aktyvavimą kas 25s gynimui"""
         while True:
-            await asyncio.sleep(20)
+            await asyncio.sleep(25)
             yield True
 
-    async def record_audio(self, duration):
+    async def record_audio(self, duration=3):
         self.logger.info(f"Fiksuojamas garsas: {duration}s")
         await asyncio.sleep(duration)
         return b"raw_data"
 
     async def send_to_gemini(self, audio_data):
-    if not self.client: return "DI nepasiekiamas."
-    try:
-        # Pakeistas modelio pavadinimas į standartinį, kurį palaiko biblioteka
-        response = await asyncio.to_thread(
-            self.client.models.generate_content,
-            model="gemini-1.5-flash", # Naudojame be prefiksų
-            contents="Atsakyk lietuviškai, trumpai, kaip piktas ežys Sonic."
-        )
-        return response.text
-    except Exception as e:
-        # Jei vis tiek meta klaidą, bandom gemini-pro
+        """Siunčiame užklausą į Gemini"""
+        if not self.client:
+            return "DI modelis nepasiekiamas."
+        
         try:
-            response = await asyncio.to_thread(self.client.models.generate_content, 
-    model="gemini-pro", contents="Atsakyk trumpai.")
+            # Pataisytas kreipimasis į modelį pagal naują biblioteką
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model="gemini-1.5-flash",
+                contents="Atsakyk labai trumpai, inžineriškai, lietuviškai."
+            )
             return response.text
-        except:
-            return f"DI KLAIDA: {e}"
+        except Exception as e:
+            self.logger.error(f"Gemini klaida: {e}")
+            return "RYŠIO TRIKDIS"
