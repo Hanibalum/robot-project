@@ -37,22 +37,21 @@ class AudioBrain:
             await asyncio.sleep(20)
             yield True
 
-    async def record_audio(self, duration=3):
+    async def record_audio(self, duration):
         self.logger.info(f"Fiksuojamas garsas: {duration}s")
         await asyncio.sleep(duration)
         return b"raw_data"
 
     async def send_to_gemini(self, audio_data):
-        if not self.client: return "DI modelis nepasiekiamas."
+        if not self.client: return "DI nepasiekiamas."
         
         try:
-            # Naudojame modelio ID, kuris tinka naujai bibliotekai
+            # Pataisytas modelio ID
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
                 model="gemini-1.5-flash",
-                contents="Atsakyk labai trumpai, inžineriškai, lietuviškai."
+                contents="Atsakyk trumpai, piktokai, lietuviškai."
             )
             return response.text
         except Exception as e:
-            self.logger.error(f"Gemini klaida: {e}")
             return "RYŠIO TRIKDIS"
