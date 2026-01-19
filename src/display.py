@@ -13,7 +13,7 @@ class EvilSonicDisplay:
         self.frames = {}
         self.frame_counter = 0
         
-        # Pinai (Pin 18->24, Pin 22->25)
+        # Pinai (GPIO)
         self.DC, self.RST = 24, 25
         
         GPIO.setmode(GPIO.BCM)
@@ -38,13 +38,15 @@ class EvilSonicDisplay:
         self.spi.writebytes(data)
 
     def init_hw(self):
+        # Fizinis Reset
         GPIO.output(self.RST, GPIO.LOW); time.sleep(0.1); GPIO.output(self.RST, GPIO.HIGH); time.sleep(0.1)
-        self.write_cmd(0x01); time.sleep(0.15)
-        self.write_cmd(0x11); time.sleep(0.1)
-        self.write_cmd(0x3A); self.write_data(0x05) 
-        self.write_cmd(0x36); self.write_data(0x00) 
-        self.write_cmd(0x21); self.write_cmd(0x29)
-        print("[OK] Ekranas pažadintas.")
+        self.write_cmd(0x01); time.sleep(0.15) # SW reset
+        self.write_cmd(0x11); time.sleep(0.1)  # Sleep out
+        self.write_cmd(0x3A); self.write_data(0x05) # 16-bit color
+        self.write_cmd(0x36); self.write_data(0x00) # MADCTL
+        self.write_cmd(0x21) # Inversion ON
+        self.write_cmd(0x29) # Display ON
+        print("[OK] ST7789 Valdiklis paruoštas.")
 
     def load_assets(self):
         states = ["static", "speaking", "angry", "laughing", "shook"]
@@ -55,31 +57,33 @@ class EvilSonicDisplay:
                 files = sorted([f for f in os.listdir(path) if f.endswith(".png")])
                 for f in files:
                     img = Image.open(os.path.join(path, f)).convert("RGB")
-                    # Svarbu: Resize į 240x320 ir pasukam
+                    # Resize į 240x320 ir pasukam
                     img = img.resize((240, 320)).rotate(90, expand=True)
                     img_data = np.array(img).astype(np.uint16)
+                    # RGB888 -> RGB565
                     color = ((img_data[:,:,0] & 0xF8) << 8) | ((img_data[:,:,1] & 0xFC) << 3) | (img_data[:,:,2] >> 3)
                     pixel_bytes = np.stack(((color >> 8).astype(np.uint8), (color & 0xFF).astype(np.uint8)), axis=-1).tobytes()
                     self.frames[state].append(pixel_bytes)
             if not self.frames[state]:
-                self.frames[state] = [np.zeros(240*320*2, dtype=np.uint8).tobytes()]
+                self.frames[state] = [np.zeros(320*240*2, dtype=np.uint8).tobytes()]
 
     def show_raw(self, pixel_bytes):
-        """Fizinis duomenų siuntimas į VRAM"""
-        # Nustatome piešimo langą (Window address) - tai ištaisys juodą ekraną
-        self.write_cmd(0x2A); self.write_data([0, 0, 0, 239]) # Column: 0-239
-        self.write_cmd(0x2B); self.write_data([0, 0, 1, 63])  # Row: 0-319
+        # TIKSLUS ADRESAVIMAS (4 baitai)
+        self.write_cmd(0x2A); self.write_data([0, 0, 0, 239]) # X: 0-239
+        self.write_cmd(0x2B); self.write_data([0, 0, 1, 63])  # Y: 0-319
         self.write_cmd(0x2C) 
         GPIO.output(self.DC, GPIO.HIGH)
+        # Siunčiame blokais
         for i in range(0, len(pixel_bytes), 4096):
             self.spi.writebytes(list(pixel_bytes[i:i+4096]))
 
     async def animate(self):
-        print("[*] Evil Sonic animacija aktyvi.")
+        print("[*] Evil Sonic animacija paleista.")
         while True:
             frames = self.frames.get(self.current_state, [])
             if frames:
                 data = frames[self.frame_counter % len(frames)]
+                # Naudojame to_thread, kad SPI blokavimas nestabdytų kito kodo
                 await asyncio.to_thread(self.show_raw, data)
                 self.frame_counter += 1
             await asyncio.sleep(0.04)
