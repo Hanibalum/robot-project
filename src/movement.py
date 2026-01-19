@@ -12,7 +12,7 @@ except ImportError:
 class XgoController:
     def __init__(self):
         self.logger = logging.getLogger("XgoController")
-        self.port = '/dev/ttyAMA0'
+        self.port = '/dev/serial0'
         self.robot = None
 
         if XGO_AVAILABLE:
