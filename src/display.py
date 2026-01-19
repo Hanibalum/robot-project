@@ -13,8 +13,9 @@ class EvilSonicDisplay:
         self.frames = {}
         self.frame_counter = 0
         
-        # Pinai
+        # Pinai: DC=24 (Pin 18), RST=25 (Pin 22), CS=0 (Pin 24)
         self.DC, self.RST = 24, 25
+        
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         GPIO.setup([self.DC, self.RST], GPIO.OUT)
@@ -37,23 +38,20 @@ class EvilSonicDisplay:
         self.spi.writebytes(data)
 
     def init_hw(self):
-        # Fizinis Reset
+        """Agresyvus ST7789 pažadinimas"""
         GPIO.output(self.RST, GPIO.LOW); time.sleep(0.2); GPIO.output(self.RST, GPIO.HIGH); time.sleep(0.2)
-        
-        self.write_cmd(0x01) # Software Reset
-        time.sleep(0.15)
-        self.write_cmd(0x11) # Sleep Out
-        time.sleep(0.1)
-        
-        # TZT 2.0" Gamykliniai nustatymai
+        self.write_cmd(0x01); time.sleep(0.15) # Software Reset
+        self.write_cmd(0x11); time.sleep(0.1)  # Sleep Out
         self.write_cmd(0x3A); self.write_data(0x05) # 16-bit color
-        self.write_cmd(0x36); self.write_data(0x00) # MADCTL: Normal orientation
-        self.write_cmd(0x21) # Inversion ON (TZT specifika)
-        self.write_cmd(0xB2); self.write_data([0x0C, 0x0C, 0x00, 0x33, 0x33]) # Porch Setting
-        self.write_cmd(0x35); self.write_data(0x00) # Tearing Effect ON
-        
+        self.write_cmd(0x36); self.write_data(0x00) # MADCTL
+        self.write_cmd(0x21) # Inversion ON (TZT ekranams būtina)
         self.write_cmd(0x29) # Display ON
-        print("[OK] Ekranas pažadintas gamykliniu režimu.")
+        
+        # TESTAS: Nušviečiam RAUDONAI 1 sekundei, kad matytume gyvybę
+        print("[*] Ekrano testas: RAUDONA")
+        test_pixel = [0xF8, 0x00] * (240 * 320) # Gryna raudona RGB565
+        self.show_raw(bytes(test_pixel))
+        time.sleep(1)
 
     def load_assets(self):
         states = ["static", "speaking", "angry", "laughing", "shook"]
@@ -64,35 +62,29 @@ class EvilSonicDisplay:
                 files = sorted([f for f in os.listdir(path) if f.endswith(".png")])
                 for f in files:
                     img = Image.open(os.path.join(path, f)).convert("RGB")
-                    # Pasukame 90 laipsnių, kad gautume 320x240 vaizdą
+                    # Svarbu: 2.0" ekranai yra 240x320. Sukame 90, kad būtų gulsčiai.
                     img = img.resize((320, 240)).rotate(90, expand=True)
                     img_data = np.array(img).astype(np.uint16)
-                    # RGB888 -> RGB565 (Inžinerinis standartas)
                     color = ((img_data[:,:,0] & 0xF8) << 8) | ((img_data[:,:,1] & 0xFC) << 3) | (img_data[:,:,2] >> 3)
                     pixel_bytes = np.stack(((color >> 8).astype(np.uint8), (color & 0xFF).astype(np.uint8)), axis=-1).tobytes()
                     self.frames[state].append(pixel_bytes)
             
             if not self.frames[state]:
-                # Jei nėra assets, rodome MĖLYNĄ kadrą kaip testą
-                blank = Image.new('RGB', (240, 320), color=(0, 0, 255))
-                img_data = np.array(blank).astype(np.uint16)
-                color = ((img_data[:,:,0] & 0xF8) << 8) | ((img_data[:,:,1] & 0xFC) << 3) | (img_data[:,:,2] >> 3)
-                self.frames[state] = [np.stack(((color >> 8).astype(np.uint8), (color & 0xFF).astype(np.uint8)), axis=-1).tobytes()]
+                # Jei nėra nuotraukų - tamsiai mėlynas kadras
+                self.frames[state] = [np.zeros(240*320*2, dtype=np.uint8).tobytes()]
 
     def show_raw(self, pixel_bytes):
-        # Column address: 0 to 239
-        self.write_cmd(0x2A); self.write_data([0x00, 0x00, 0x00, 0xEF])
-        # Row address: 0 to 319
-        self.write_cmd(0x2B); self.write_data([0x00, 0x00, 0x01, 0x3F])
+        """Duomenų siuntimas su TZT Offset pataisymu"""
+        self.write_cmd(0x2A); self.write_data([0, 0, 0, 239]) # X: 0-239
+        self.write_cmd(0x2B); self.write_data([0, 0, 1, 63])  # Y: 0-319
         self.write_cmd(0x2C) 
-        
         GPIO.output(self.DC, GPIO.HIGH)
-        chunk_size = 4096
-        for i in range(0, len(pixel_bytes), chunk_size):
-            self.spi.writebytes(list(pixel_bytes[i:i+chunk_size]))
+        # Siunčiame blokais po 4096 baitus
+        for i in range(0, len(pixel_bytes), 4096):
+            self.spi.writebytes(list(pixel_bytes[i:i+4096]))
 
     async def animate(self):
-        print("[*] Animacija paleista.")
+        print("[*] Evil Sonic animacija paleista...")
         while True:
             frames = self.frames.get(self.current_state, [])
             if frames:
