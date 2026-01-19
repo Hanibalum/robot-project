@@ -13,16 +13,15 @@ class EvilSonicDisplay:
         self.frames = {}
         self.frame_counter = 0
         
-        # Pinai: DC=24 (Pin 18), RST=25 (Pin 22), CS=0 (Pin 24)
+        # PINAI (Pin 18->24, Pin 22->25)
         self.DC, self.RST = 24, 25
-        
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         GPIO.setup([self.DC, self.RST], GPIO.OUT)
 
         self.spi = spidev.SpiDev()
         self.spi.open(0, 0)
-        self.spi.max_speed_hz = 32000000 
+        self.spi.max_speed_hz = 16000000 # 16MHz saugiau nei 40MHz
         self.spi.mode = 0b11 
         
         self.init_hw()
@@ -38,20 +37,14 @@ class EvilSonicDisplay:
         self.spi.writebytes(data)
 
     def init_hw(self):
-        """Agresyvus ST7789 pažadinimas"""
+        # HARDWARE RESET
         GPIO.output(self.RST, GPIO.LOW); time.sleep(0.2); GPIO.output(self.RST, GPIO.HIGH); time.sleep(0.2)
-        self.write_cmd(0x01); time.sleep(0.15) # Software Reset
+        self.write_cmd(0x01); time.sleep(0.15) # SW Reset
         self.write_cmd(0x11); time.sleep(0.1)  # Sleep Out
-        self.write_cmd(0x3A); self.write_data(0x05) # 16-bit color
+        self.write_cmd(0x3A); self.write_data(0x05) # 16-bit
         self.write_cmd(0x36); self.write_data(0x00) # MADCTL
-        self.write_cmd(0x21) # Inversion ON (TZT ekranams būtina)
+        self.write_cmd(0x21) # Inversion ON (TZT butina)
         self.write_cmd(0x29) # Display ON
-        
-        # TESTAS: Nušviečiam RAUDONAI 1 sekundei, kad matytume gyvybę
-        print("[*] Ekrano testas: RAUDONA")
-        test_pixel = [0xF8, 0x00] * (240 * 320) # Gryna raudona RGB565
-        self.show_raw(bytes(test_pixel))
-        time.sleep(1)
 
     def load_assets(self):
         states = ["static", "speaking", "angry", "laughing", "shook"]
@@ -62,36 +55,34 @@ class EvilSonicDisplay:
                 files = sorted([f for f in os.listdir(path) if f.endswith(".png")])
                 for f in files:
                     img = Image.open(os.path.join(path, f)).convert("RGB")
-                    # Svarbu: 2.0" ekranai yra 240x320. Sukame 90, kad būtų gulsčiai.
                     img = img.resize((320, 240)).rotate(90, expand=True)
                     img_data = np.array(img).astype(np.uint16)
+                    # Konvertuojam į RGB565 formatą
                     color = ((img_data[:,:,0] & 0xF8) << 8) | ((img_data[:,:,1] & 0xFC) << 3) | (img_data[:,:,2] >> 3)
                     pixel_bytes = np.stack(((color >> 8).astype(np.uint8), (color & 0xFF).astype(np.uint8)), axis=-1).tobytes()
                     self.frames[state].append(pixel_bytes)
-            
             if not self.frames[state]:
-                # Jei nėra nuotraukų - tamsiai mėlynas kadras
-                self.frames[state] = [np.zeros(240*320*2, dtype=np.uint8).tobytes()]
+                # Jei nėra nuotraukų - darysim RAUDONĄ kvadratą testui
+                red_buf = [0xF8, 0x00] * (240 * 320)
+                self.frames[state] = [bytes(red_buf)]
 
     def show_raw(self, pixel_bytes):
-        """Duomenų siuntimas su TZT Offset pataisymu"""
-        self.write_cmd(0x2A); self.write_data([0, 0, 0, 239]) # X: 0-239
-        self.write_cmd(0x2B); self.write_data([0, 0, 1, 63])  # Y: 0-319
+        self.write_cmd(0x2A); self.write_data([0, 0, 0, 239])
+        self.write_cmd(0x2B); self.write_data([0, 0, 1, 63])
         self.write_cmd(0x2C) 
         GPIO.output(self.DC, GPIO.HIGH)
-        # Siunčiame blokais po 4096 baitus
         for i in range(0, len(pixel_bytes), 4096):
             self.spi.writebytes(list(pixel_bytes[i:i+4096]))
 
     async def animate(self):
-        print("[*] Evil Sonic animacija paleista...")
+        print("[*] Animacija paleista...")
         while True:
             frames = self.frames.get(self.current_state, [])
             if frames:
                 data = frames[self.frame_counter % len(frames)]
                 await asyncio.to_thread(self.show_raw, data)
                 self.frame_counter += 1
-            await asyncio.sleep(0.04)
+            await asyncio.sleep(0.05)
 
     def set_state(self, new_state):
         if new_state in self.frames and new_state != self.current_state:
