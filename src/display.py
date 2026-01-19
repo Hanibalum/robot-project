@@ -1,12 +1,9 @@
-try:
-    import st7789
-except ImportError:
-    # If running in environment without st7789, it should be mocked before import
-    pass
-
+import st7789
 from PIL import Image
 import os
 import asyncio
+import RPi.GPIO as GPIO
+import time
 
 class EvilSonicDisplay:
     def __init__(self, assets_dir="/home/cm4/robot-project/src/assets/"):
@@ -15,105 +12,101 @@ class EvilSonicDisplay:
         self.frames = {}
         self.frame_counter = 0
         
-        # Initialize ST7789 with CORRECT PINS (from Final Instructions)
-        # Port=0
-        # CS=0 (GPIO 8 / Physical 24)
-        # DC=24 (Physical 18)
-        # RST=25 (Physical 22)
-        
+        # --- APARATŪRINIAI PATAISYMAI ---
+        # Pinai (pagal tavo schemą)
+        self.DC_GPIO = 24
+        self.RST_GPIO = 25
+        self.CS_DEVICE = 0 # Pin 24 (CE0)
+
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        GPIO.setup(self.RST_GPIO, GPIO.OUT)
+
+        # 1. Fizinis RESET (SVARBU: Išvalo sniegą ir pažadina valdiklį)
+        GPIO.output(self.RST_GPIO, GPIO.LOW)
+        time.sleep(0.1)
+        GPIO.output(self.RST_GPIO, GPIO.HIGH)
+        time.sleep(0.1)
+
+        # 2. Inicijuojame ST7789 (Naudojame 0 rotaciją, kad nebūtų klaidų)
         self.disp = st7789.ST7789(
             port=0,
-            cs=0,       # GPIO 8
-            dc=24,      # GPIO 24
-            rst=25,     # GPIO 25
-            backlight=None, 
-            spi_speed_hz=80 * 1000 * 1000
+            cs=self.CS_DEVICE,
+            dc=self.DC_GPIO,
+            rst=self.RST_GPIO,
+            width=240,
+            height=320,
+            rotation=0, # Paliekame 0, kad išvengtume bibliotekos klaidų
+            spi_speed_hz=8000000 # 8MHz užtikrina stabilumą be triukšmo
         )
         
-        # Initialize display
         self.disp.begin()
-        self.width = self.disp.width
-        self.height = self.disp.height
         
-        # Preload assets
+        # 3. TZT SPECIFINĖS KOMANDOS (Pažadina vaizdą ir spalvas)
+        self.disp.command(0x21) # INVON (Inversion On) - Būtina tavo ekranui
+        self.disp.command(0x11) # SLPOUT (Išeiti iš miego)
+        self.disp.command(0x29) # DISPON (Įjungti išvedimą)
+        
+        # Užkrauname assets
         self.load_assets()
 
     def load_assets(self):
-        """Loads PNG frames for ONLY the valid states."""
-        # Valid Folders: static, speaking, angry, laughing, shook
+        """Užkrauna PNG kadrus ir juos pasuka 90 laipsnių rankiniu būdu"""
         states = ["static", "speaking", "angry", "laughing", "shook"]
         
         for state in states:
             self.frames[state] = []
-            path = os.path.join(self.assets_dir, state)
+            path = os.path.join(self.assets_path if hasattr(self, 'assets_path') else self.assets_dir, state)
             if os.path.exists(path):
-                # Load and sort by filename
                 files = sorted([f for f in os.listdir(path) if f.endswith(".png")])
                 for f in files:
                     try:
-                        img = Image.open(os.path.join(path, f))
-                        # Resize to 240x320 if needed
-                        img = img.resize((240, 320))
+                        img = Image.open(os.path.join(path, f)).convert("RGB")
+                        # --- RANKINIS PASUKIMAS (Apeinam bibliotekos klaidą) ---
+                        # Rezaisinam į gulsčią ir pasukam į portretinį ekraną
+                        img = img.resize((320, 240))
+                        img = img.rotate(90, expand=True)
                         self.frames[state].append(img)
                     except Exception as e:
-                        print(f"Error loading {f}: {e}")
-            else:
-                print(f"Warning: Asset folder not found: {path}")
-                # Create a placeholder image
-                img = Image.new('RGB', (240, 320), color=(0, 0, 0))
-                self.frames[state].append(img)
-                
+                        print(f"Klaida kraunant {f}: {e}")
+            
+            if not self.frames[state]:
+                print(f"Warning: Asset folder empty or not found: {path}")
+                # Avarinis mėlynas kadras, kad matytume, jog ekranas gyvas
+                err_img = Image.new('RGB', (240, 320), color=(0, 0, 255))
+                self.frames[state].append(err_img)
+
     def get_next_frame(self):
-        """Returns the next frame based on current state and frame_counter."""
+        """Išsaugojome JULES sukurtą Ping-Pong logiką"""
         frames = self.frames.get(self.current_state, [])
         if not frames:
-            return Image.new('RGB', (240, 320), (0, 0, 0))
+            return Image.new('RGB', (240, 320), color=(0, 0, 0))
             
         total_frames = len(frames)
-        idx = 0
         
-        # Smart Looping Logic for "angry" and "shook"
-        # 1. Play Full Sequence (0 -> End) ONCE
-        # 2. Then Ping-Pong Loop the last 50%
         if self.current_state in ["angry", "shook"] and total_frames > 1:
             if self.frame_counter < total_frames:
-                # INTRO PHASE: Play linearly
                 idx = self.frame_counter
             else:
-                # LOOP PHASE: Ping-Pong last 50%
                 loop_start = total_frames // 2
                 loop_len = total_frames - loop_start
-                
                 if loop_len > 1:
-                    # Frames elapsed since entering loop phase
                     frames_in_loop = self.frame_counter - total_frames
                     cycle_len = (loop_len * 2) - 2
-                    
-                    # Position in the ping-pong cycle (0 to cycle_len-1)
                     pos = frames_in_loop % cycle_len
-                    
-                    if pos < loop_len:
-                        # Forward part of ping-pong
-                        offset = pos
-                    else:
-                        # Backward part of ping-pong
-                        offset = cycle_len - pos
-                        
+                    offset = pos if pos < loop_len else cycle_len - pos
                     idx = loop_start + offset
                 else:
-                    # Fallback if too few frames to loop
                     idx = total_frames - 1
         else:
-            # Standard Loop (static, speaking, laughing)
-            # Cycle 0 -> End -> 0
             idx = self.frame_counter % total_frames
             
         return frames[idx]
 
     async def animate(self):
-        """Main loop to update display."""
+        """Pagrindinis vaizdo atnaujinimo ciklas"""
+        print("[*] Ekrano animacija paleista...")
         while True:
-            # 20 FPS -> 0.05s
             start_time = asyncio.get_event_loop().time()
             
             img = self.get_next_frame()
@@ -122,11 +115,11 @@ class EvilSonicDisplay:
             self.frame_counter += 1
             
             elapsed = asyncio.get_event_loop().time() - start_time
-            sleep_time = max(0.001, 0.05 - elapsed)
-            await asyncio.sleep(sleep_time)
+            # 20 FPS (0.05s)
+            await asyncio.sleep(max(0.001, 0.05 - elapsed))
 
     def set_state(self, new_state):
-        # Validates state and resets counter if changed
         if new_state in self.frames and new_state != self.current_state:
+            print(f"[DISPLAY] Keiciama busena i: {new_state}")
             self.current_state = new_state
             self.frame_counter = 0
