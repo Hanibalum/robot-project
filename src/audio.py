@@ -40,14 +40,15 @@ class AudioBrain:
         return b"raw"
 
     async def send_to_gemini(self, audio_data):
-        if not self.client: return "API RAKTO KLAIDA"
+        if not self.client: return "DI nepasiekiamas."
         try:
             # Naudojame stabilesnį modelį v1 versijai
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
-                model="gemini-pro",
+                model="gemini-1.5-flash",
                 contents="Tu esi Evil Sonic. Atsakyk trumpai ir grėsmingai."
             )
             return response.text
         except Exception as e:
+            self.logger.error(f"DI klaida: {e}")
             return f"DI KLAIDA: {e}"
