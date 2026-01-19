@@ -43,15 +43,20 @@ class AudioBrain:
         return b"raw_data"
 
     async def send_to_gemini(self, audio_data):
-        if not self.client: return "DI nepasiekiamas."
-        
+    if not self.client: return "DI nepasiekiamas."
+    try:
+        # Pakeistas modelio pavadinimas į standartinį, kurį palaiko biblioteka
+        response = await asyncio.to_thread(
+            self.client.models.generate_content,
+            model="gemini-1.5-flash", # Naudojame be prefiksų
+            contents="Atsakyk lietuviškai, trumpai, kaip piktas ežys Sonic."
+        )
+        return response.text
+    except Exception as e:
+        # Jei vis tiek meta klaidą, bandom gemini-pro
         try:
-            # Pataisytas modelio ID
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model="gemini-1.5-flash",
-                contents="Atsakyk trumpai, piktokai, lietuviškai."
-            )
+            response = await asyncio.to_thread(self.client.models.generate_content, 
+    model="gemini-pro", contents="Atsakyk trumpai.")
             return response.text
-        except Exception as e:
-            return "RYŠIO TRIKDIS"
+        except:
+            return f"DI KLAIDA: {e}"
