@@ -1,54 +1,38 @@
-import sounddevice as sd
-import vosk
-import json
-import logging
 import asyncio
 import os
 from google import genai
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+import logging
 
 class AudioBrain:
-    def __init__(self, model_path="/home/cm4/robot-project/src/model"):
+    def __init__(self):
         self.logger = logging.getLogger("AudioBrain")
-        # Gemini
         try:
-            with open(os.path.join(BASE_DIR, "secrets.txt"), "r") as f:
+            with open('/home/cm4/robot-project/src/secrets.txt', 'r') as f:
                 api_key = f.read().strip()
+            # Naudojame tiesioginį klientą be v1beta prefiksų
             self.client = genai.Client(api_key=api_key)
-            self.logger.info("Gemini raktas užkrautas.")
-        except: self.client = None
-
-        # Vosk modelio patikra
-        self.recognizer = None
-        if os.path.exists(model_path) and os.listdir(model_path):
-            try:
-                self.model = vosk.Model(model_path)
-                self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
-            except: pass
-        else:
-            self.logger.warning("Vosk modelio failų nėra. Veiks demo režimas.")
+        except:
+            self.client = None
 
     async def monitor_wake_word(self):
-        """Demo režimas poryt vyksiančiam gynimui"""
+        """Imituojame aktyvavimą kas 20s gynimui"""
         while True:
             await asyncio.sleep(20)
             yield True
 
     async def record_audio(self, duration=3):
         await asyncio.sleep(duration)
-        return b"raw"
+        return b"data"
 
     async def send_to_gemini(self, audio_data):
-        if not self.client: return "DI nepasiekiamas."
+        if not self.client:
+            return "API RAKTO KLAIDA"
         try:
-            # Naudojame stabilesnį modelį v1 versijai
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
+            # Pakeistas modelio ID ir iškvieta
+            response = self.client.models.generate_content(
                 model="gemini-1.5-flash",
-                contents="Tu esi Evil Sonic. Atsakyk trumpai ir grėsmingai."
+                contents="Tu esi robotas Evil Sonic. Atsakyk lietuviškai, trumpai, grėsmingai į klausimą: Koks tavo planas?"
             )
             return response.text
         except Exception as e:
-            self.logger.error(f"DI klaida: {e}")
-            return f"DI KLAIDA: {e}"
+            return f"DI KLAIDA: {str(e)}"
