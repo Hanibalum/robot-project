@@ -1,10 +1,10 @@
-import time
+import st7789
+from PIL import Image
 import os
-import spidev
+import asyncio
 import RPi.GPIO as GPIO
 import numpy as np
-from PIL import Image
-import asyncio
+import time
 
 class EvilSonicDisplay:
     def __init__(self, assets_dir="/home/cm4/robot-project/src/assets/"):
@@ -13,41 +13,27 @@ class EvilSonicDisplay:
         self.frames = {}
         self.frame_counter = 0
         
-        self.DC = 24
-        self.RST = 25
-        
+        # Pinai (Pin 18->24, Pin 22->25, Pin 24->CS0)
+        self.DC, self.RST, self.CS = 24, 25, 0
+
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         GPIO.setup([self.DC, self.RST], GPIO.OUT)
 
-        self.spi = spidev.SpiDev()
-        self.spi.open(0, 0)
-        self.spi.max_speed_hz = 40000000 
-        self.spi.mode = 0b11 
-        
-        self.init_display_hardware()
+        # 1. Fizinis Reset
+        GPIO.output(self.RST, GPIO.LOW); time.sleep(0.1); GPIO.output(self.RST, GPIO.HIGH)
+
+        # 2. Inicializacija
+        self.disp = st7789.ST7789(
+            port=0, cs=self.CS, dc=self.DC, rst=self.RST,
+            width=240, height=320, rotation=0, spi_speed_hz=40000000
+        )
+        self.disp.begin()
+        self.disp.command(0x21) # Inversija
+        self.disp.command(0x11) # Wake
+        self.disp.command(0x29) # On
+
         self.load_assets()
-
-    def write_cmd(self, cmd):
-        GPIO.output(self.DC, GPIO.LOW)
-        self.spi.writebytes([cmd])
-
-    def write_data(self, data):
-        GPIO.output(self.DC, GPIO.HIGH)
-        if isinstance(data, int): data = [data]
-        self.spi.writebytes(data)
-
-    def init_display_hardware(self):
-        GPIO.output(self.RST, GPIO.LOW)
-        time.sleep(0.1)
-        GPIO.output(self.RST, GPIO.HIGH)
-        time.sleep(0.1)
-        self.write_cmd(0x01); time.sleep(0.15)
-        self.write_cmd(0x11); time.sleep(0.1)
-        self.write_cmd(0x3A); self.write_data(0x05) 
-        self.write_cmd(0x36); self.write_data(0x00) 
-        self.write_cmd(0x21); self.write_cmd(0x29)
-        print("[OK] Ekranas pažadintas.")
 
     def load_assets(self):
         states = ["static", "speaking", "angry", "laughing", "shook"]
@@ -58,36 +44,20 @@ class EvilSonicDisplay:
                 files = sorted([f for f in os.listdir(path) if f.endswith(".png")])
                 for f in files:
                     img = Image.open(os.path.join(path, f)).convert("RGB")
-                    img = img.resize((240, 320)).rotate(90, expand=True)
-                    # Optimizuotas konvertavimas į RGB565
-                    img_data = np.array(img).astype(np.uint16)
-                    color = ((img_data[:,:,0] & 0xF8) << 8) | ((img_data[:,:,1] & 0xFC) << 3) | (img_data[:,:,2] >> 3)
-                    high_byte = (color >> 8).astype(np.uint8)
-                    low_byte = (color & 0xFF).astype(np.uint8)
-                    # Sujungiam į baitų seką, kurią supranta SPI
-                    pixel_bytes = np.stack((high_byte, low_byte), axis=-1).tobytes()
-                    self.frames[state].append(pixel_bytes)
-            
+                    # Pasukame ir optimizuojame per Numpy
+                    img = img.resize((320, 240)).rotate(90, expand=True)
+                    self.frames[state].append(img)
             if not self.frames[state]:
-                # Avarinis vaizdas (mėlynas)
-                self.frames[state] = [np.zeros((320, 240, 2), dtype=np.uint8).tobytes()]
-
-    def show_raw(self, pixel_bytes):
-        self.write_cmd(0x2A); self.write_data([0, 0, 0, 239])
-        self.write_cmd(0x2B); self.write_data([0, 0, 1, 63])
-        self.write_cmd(0x2C)
-        GPIO.output(self.DC, GPIO.HIGH)
-        # Siunčiame viską vienu ypu (spidev limitas yra ~4096, bet kai kurie dravieriai leidžia daugiau)
-        for i in range(0, len(pixel_bytes), 4096):
-            self.spi.writebytes(list(pixel_bytes[i:i+4096]))
+                self.frames[state] = [Image.new('RGB', (240, 320), color=(0, 0, 100))]
 
     async def animate(self):
-        print("[*] Animacija paleista...")
+        print("[*] Ekrano animacija paleista (Numpy optimized).")
         while True:
             frames = self.frames.get(self.current_state, [])
             if frames:
-                pixel_data = frames[self.frame_counter % len(frames)]
-                await asyncio.to_thread(self.show_raw, pixel_data)
+                img = frames[self.frame_counter % len(frames)]
+                # Naudojame greitą išvedimą
+                await asyncio.to_thread(self.disp.display, img)
                 self.frame_counter += 1
             await asyncio.sleep(0.04)
 
