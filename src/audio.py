@@ -43,12 +43,10 @@ class AudioBrain:
         return b"raw_data"
 
     async def send_to_gemini(self, audio_data):
-        """Siunčiame užklausą į Gemini"""
-        if not self.client:
-            return "DI nepasiekiamas."
+        if not self.client: return "DI nepasiekiamas."
         
         try:
-            # Pataisytas kreipimasis į modelį pagal naują biblioteką
+           # Svarbu: modelio pavadinimas be 'models/' prefixo
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
                 model="gemini-1.5-flash",
@@ -56,5 +54,5 @@ class AudioBrain:
             )
             return response.text
         except Exception as e:
-            self.logger.error(f"Gemini klaida: {e}")
-            return "DI RYŠIO TRIKDIS"
+            self.logger.error(f"DI Klaida: {e}")
+            return "RYŠIO TRIKDIS"
