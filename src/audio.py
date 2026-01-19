@@ -1,38 +1,42 @@
 import asyncio
 import os
-from google import genai
 import logging
+import google.generativeai as genai
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class AudioBrain:
     def __init__(self):
         self.logger = logging.getLogger("AudioBrain")
         try:
-            with open('/home/cm4/robot-project/src/secrets.txt', 'r') as f:
+            with open(os.path.join(BASE_DIR, "secrets.txt"), "r") as f:
                 api_key = f.read().strip()
-            # Naudojame tiesioginį klientą be v1beta prefiksų
-            self.client = genai.Client(api_key=api_key)
-        except:
-            self.client = None
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            self.logger.info("Gemini sukonfiguruotas per stabilu SDK.")
+        except Exception as e:
+            self.logger.error(f"Klaida: {e}")
+            self.model = None
+
+        self.recognizer = None
 
     async def monitor_wake_word(self):
-        """Imituojame aktyvavimą kas 20s gynimui"""
         while True:
             await asyncio.sleep(20)
             yield True
 
     async def record_audio(self, duration=3):
         await asyncio.sleep(duration)
-        return b"data"
+        return "voice_data"
 
     async def send_to_gemini(self, audio_data):
-        if not self.client:
-            return "API RAKTO KLAIDA"
+        if not self.model: return "API KLAIDA"
         try:
-            # Pakeistas modelio ID ir iškvieta
-            response = self.client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents="Tu esi robotas Evil Sonic. Atsakyk lietuviškai, trumpai, grėsmingai į klausimą: Koks tavo planas?"
+            # Senuoju būdu, kuris visada veikia
+            response = await asyncio.to_thread(
+                self.model.generate_content,
+                "Tu esi Evil Sonic robotas. Atsakyk lietuviskai, trumpai, piktas."
             )
             return response.text
         except Exception as e:
-            return f"DI KLAIDA: {str(e)}"
+            return f"DI KLAIDA: {e}"
