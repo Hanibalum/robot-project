@@ -5,6 +5,7 @@ import RPi.GPIO as GPIO
 import numpy as np
 from PIL import Image
 import threading
+import asyncio  # BŪTINA IMPORTUOTI
 
 class EvilSonicDisplay:
     def __init__(self, assets_dir="/home/cm4/robot-project/src/assets/"):
@@ -14,13 +15,11 @@ class EvilSonicDisplay:
         self.lock = threading.Lock()
         self.frame_counter = 0
         
-        # Pinai (GPIO)
+        # Pinai
         self.DC, self.RST = 24, 25
         GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
         GPIO.setup([self.DC, self.RST], GPIO.OUT)
 
-        # SPI setupas
         self.spi = spidev.SpiDev()
         self.spi.open(0, 0)
         self.spi.max_speed_hz = 40000000 
@@ -29,22 +28,19 @@ class EvilSonicDisplay:
         self._init_st7789()
         self.load_assets("static") 
         
-        # Paleidžiame TIKRĄ giją vaizdui
         self.running = True
         self.render_thread = threading.Thread(target=self._render_loop, daemon=True)
         self.render_thread.start()
 
     def _init_st7789(self):
-        """Hardware inicializacija"""
         GPIO.output(self.RST, GPIO.LOW); time.sleep(0.1); GPIO.output(self.RST, GPIO.HIGH); time.sleep(0.1)
-        # SW Reset, Sleep Out, Color Mode, Orientation (0x70), Inversion On, Display On
+        # 0x36, [0x70] - Landscape režimas
         for cmd, data in [(0x01, None), (0x11, None), (0x3A, [0x05]), (0x36, [0x70]), (0x21, None), (0x29, None)]:
             GPIO.output(self.DC, GPIO.LOW); self.spi.writebytes([cmd])
             if data: GPIO.output(self.DC, GPIO.HIGH); self.spi.writebytes(data)
             time.sleep(0.1)
 
     def load_assets(self, state):
-        """Užkrauna kadrus į RAM"""
         path = os.path.join(self.assets_dir, state)
         new_frames = []
         if os.path.exists(path):
@@ -62,7 +58,6 @@ class EvilSonicDisplay:
             self.frame_counter = 0
 
     def _render_loop(self):
-        """Atskiras procesas vaizdui siųsti"""
         while self.running:
             with self.lock:
                 frames = list(self.frame_buffer)
@@ -73,9 +68,9 @@ class EvilSonicDisplay:
             
             frame = frames[counter % len(frames)]
             
-            # Adresavimas (Fiksas laipteliams)
-            GPIO.output(self.DC, GPIO.LOW); self.spi.writebytes([0x2A]); GPIO.output(self.DC, GPIO.HIGH); self.spi.writebytes([0, 0, 0, 1, 0x3F])
-            GPIO.output(self.DC, GPIO.LOW); self.spi.writebytes([0x2B]); GPIO.output(self.DC, GPIO.HIGH); self.spi.writebytes([0, 0, 0, 0, 0xEF])
+            # Adresavimas (0-319, 0-239)
+            GPIO.output(self.DC, GPIO.LOW); self.spi.writebytes([0x2A]); GPIO.output(self.DC, GPIO.HIGH); self.spi.writebytes([0, 0, 1, 0x3F])
+            GPIO.output(self.DC, GPIO.LOW); self.spi.writebytes([0x2B]); GPIO.output(self.DC, GPIO.HIGH); self.spi.writebytes([0, 0, 0, 0xEF])
             GPIO.output(self.DC, GPIO.LOW); self.spi.writebytes([0x2C]); GPIO.output(self.DC, GPIO.HIGH)
             
             for i in range(0, len(frame), 4096):
@@ -85,11 +80,9 @@ class EvilSonicDisplay:
             time.sleep(0.04)
 
     async def animate(self):
-        """Asinhroninis placeholderis, kad main.py nenulūžtų"""
+        """Asinhroninis prižiūrėtojas"""
         while self.running:
             await asyncio.sleep(1)
 
     def set_state(self, state):
-        """Pakeičia emociją"""
-        # Kadangi kadrų krovimas lėtas, darome tai atskiroje gijoje
-        threading.Thread(target=self.load_assets, args=(state,), daemon=True).start()
+        self.load_assets(state)
