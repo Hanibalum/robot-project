@@ -3,24 +3,33 @@ import os
 import logging
 import google.generativeai as genai
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 class AudioBrain:
     def __init__(self):
         self.logger = logging.getLogger("AudioBrain")
         try:
-            with open(os.path.join(BASE_DIR, "secrets.txt"), "r") as f:
+            with open('/home/cm4/robot-project/src/secrets.txt', 'r') as f:
                 api_key = f.read().strip()
             genai.configure(api_key=api_key)
-            # Naudojame modelį be papildomų prefixų
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
-            print("[OK] Gemini paruoštas stabiliai.")
-        except:
+            
+            # DIAGNOSTIKA: Surandame, kokį modelį Google mums leidžia naudoti
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            # Prioritetas: 1.5-flash, tada pro, tada bet koks pirmas veikiantis
+            if 'models/gemini-1.5-flash' in available_models:
+                self.model_name = 'gemini-1.5-flash'
+            elif 'models/gemini-pro' in available_models:
+                self.model_name = 'gemini-pro'
+            else:
+                self.model_name = available_models[0].replace('models/', '')
+            
+            self.model = genai.GenerativeModel(self.model_name)
+            self.logger.info(f"[OK] Naudojamas DI modelis: {self.model_name}")
+        except Exception as e:
+            self.logger.error(f"DI krovimo klaida: {e}")
             self.model = None
 
     async def monitor_wake_word(self):
         while True:
-            await asyncio.sleep(25)
+            await asyncio.sleep(20)
             yield True
 
     async def record_audio(self, duration=3):
@@ -28,16 +37,10 @@ class AudioBrain:
         return "data"
 
     async def send_to_gemini(self, audio_data):
-        if not self.model: return "API RAKTO KLAIDA"
+        if not self.model: return "DI NEPASIEKIAMAS"
         try:
-            # Tikslus užklausos formatas
-            response = await asyncio.to_thread(self.model.generate_content, "Atsakyk trumpai lietuviškai.")
+            # Trumpas, grėsmingas Evil Sonic atsakymas
+            response = await asyncio.to_thread(self.model.generate_content, "Atsakyk kaip piktas robotas, labai trumpai lietuviškai.")
             return response.text
         except Exception as e:
-            # Jei vis tiek 404, bandom kitą ID
-            try:
-                self.model = genai.GenerativeModel('gemini-pro')
-                response = await asyncio.to_thread(self.model.generate_content, "Labas")
-                return response.text
-            except:
-                return f"DI TRIKDIS: {str(e)[:30]}"
+            return f"RYŠIO KLAIDA: {str(e)[:30]}"
