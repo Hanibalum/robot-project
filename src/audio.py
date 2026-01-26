@@ -5,7 +5,7 @@ import google.generativeai as genai
 from gtts import gTTS
 import pygame
 
-# Указываем драйвер звука для CM4
+# Настройка аудио-драйвера для CM4
 os.environ['SDL_AUDIODRIVER'] = 'alsa'
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -13,10 +13,10 @@ class AudioBrain:
     def __init__(self):
         self.logger = logging.getLogger("AudioBrain")
         
-        # Инициализация звука
+        # Инициализация звука для вывода на GPIO 12/13
         try:
             pygame.mixer.init()
-            self.logger.info("Аудиосистема готова.")
+            self.logger.info("Аудиосистема готова (ALSA).")
         except Exception as e:
             self.logger.error(f"Ошибка звука: {e}")
 
@@ -26,55 +26,73 @@ class AudioBrain:
             with open(key_path, "r") as f:
                 api_key = f.read().strip()
             
-            # Настройка стабильной библиотеки
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
-            self.logger.info("Sani: Интеллект Gemini 1.5 Flash подключен (Stable SDK).")
+            
+            # АВТОМАТИЧЕСКИЙ ПОИСК ДОСТУПНОЙ МОДЕЛИ
+            # Это исключит ошибку 404, так как мы возьмем только то, что работает
+            self.model_name = 'gemini-1.5-flash' # По умолчанию
+            try:
+                available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                if 'models/gemini-1.5-flash' in available_models:
+                    self.model_name = 'gemini-1.5-flash'
+                elif 'models/gemini-pro' in available_models:
+                    self.model_name = 'gemini-pro'
+                else:
+                    self.model_name = available_models[0].split('/')[-1]
+                self.logger.info(f"Используется модель: {self.model_name}")
+            except:
+                self.logger.warning("Не удалось составить список моделей, пробуем стандарт.")
+
+            self.model = genai.GenerativeModel(self.model_name)
+            self.logger.info("Sani: Интеллект подключен.")
         except Exception as e:
             self.logger.error(f"Ошибка API: {e}")
             self.model = None
 
     async def monitor_wake_word(self):
-        """ Цикл активации Сани """
+        """ Цикл активации. Сейчас — каждые 30 секунд для тестов. """
         while True:
             await asyncio.sleep(30) 
             yield True
 
     async def record_audio(self, duration=3):
-        """ Заглушка записи """
+        """ Здесь будет интеграция с Vosk/Микрофоном """
         self.logger.info("Слушаю...")
         await asyncio.sleep(duration)
-        return "data"
+        return "voice_data"
 
     async def send_to_gemini(self, audio_data):
-        """ Отправка запроса через стабильный метод """
+        """ Отправка запроса без ошибок 404 """
         if not self.model: return "ОШИБКА КОНФИГУРАЦИИ"
         
+        # Прямая инструкция для Сани
+        prompt = "Ты — злой и циничный робот Сани. Отвечай на русском языке, очень коротко (до 10 слов)."
+        
         try:
-            # Прямой вызов модели (без лишних префиксов в URL)
-            response = await asyncio.to_thread(
-                self.model.generate_content,
-                "Ты — злой робот Сани. Отвечай на русском языке, очень коротко и угрожающе."
-            )
+            # Используем выбранную модель
+            response = await asyncio.to_thread(self.model.generate_content, prompt)
             return response.text
         except Exception as e:
             self.logger.error(f"Ошибка Gemini: {e}")
-            return "СЕТЕВАЯ ОШИБКА"
+            return "СЕРВЕР НЕ ОТВЕЧАЕТ"
 
     async def speak(self, text):
-        """ Озвучка текста через динамик """
+        """ Озвучка текста через TDA1308 """
         try:
             filename = os.path.join(BASE_DIR, "res.mp3")
             self.logger.info(f"Голос Сани: {text}")
             
-            # Генерация файла
+            # Генерация аудио
             tts = gTTS(text=text, lang='ru')
             tts.save(filename)
             
-            # Воспроизведение
+            # Загрузка и воспроизведение
             pygame.mixer.music.load(filename)
             pygame.mixer.music.play()
+            
+            # Ждем пока договорит, не блокируя анимацию глаз
             while pygame.mixer.music.get_busy():
                 await asyncio.sleep(0.1)
+                
         except Exception as e:
-            self.logger.error(f"Ошибка динамика: {e}")
+            self.logger.error(f"Ошибка воспроизведения: {e}")
