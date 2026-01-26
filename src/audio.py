@@ -1,11 +1,11 @@
 import asyncio
 import os
 import logging
-import google.generativeai as genai
+from google import genai
 from gtts import gTTS
 import pygame
 
-# Путь к основной директории
+# Путь к папке проекта
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class AudioBrain:
@@ -15,58 +15,57 @@ class AudioBrain:
         pygame.mixer.init()
         
         try:
-            # Загружаем ключ из secrets.txt
+            # Загружаем API ключ
             key_path = os.path.join(BASE_DIR, "secrets.txt")
             with open(key_path, "r") as f:
                 api_key = f.read().strip()
             
-            genai.configure(api_key=api_key)
-            # Используем gemini-pro, так как он самый стабильный для этой библиотеки
-            self.model = genai.GenerativeModel('gemini-pro')
-            self.logger.info("Gemini готов. Используется модель gemini-pro для стабильности.")
+            # Инициализируем НОВЫЙ клиент Google GenAI
+            self.client = genai.Client(api_key=api_key)
+            self.logger.info("Sani: Интеллект Gemini 1.5 Flash подключен через новый SDK.")
         except Exception as e:
             self.logger.error(f"Ошибка ключа: {e}")
-            self.model = None
+            self.client = None
 
     async def monitor_wake_word(self):
-        """ Цикл ожидания команды 'САНИ' (пока эмуляция для теста) """
+        """ Цикл активации. Для тестов — раз в 40 секунд. """
         while True:
             await asyncio.sleep(40) 
             yield True
 
     async def record_audio(self, duration=3):
-        """ Имитация записи голоса """
-        self.logger.info("Слушаю пользователя...")
+        """ Заглушка для записи голоса """
+        self.logger.info("Слушаю...")
         await asyncio.sleep(duration)
-        return "fake_audio_data"
+        return "simulate_data"
 
     async def send_to_gemini(self, audio_data):
-        """ Отправка запроса в Google AI """
-        if not self.model: return "ОШИБКА КОНФИГУРАЦИИ"
-        
-        # Четкая инструкция для Сани
-        prompt = "Ты — злой робот по имени Сани. Отвечай на русском языке, очень коротко и угрожающе."
+        """ Отправка запроса в Google AI через новый метод """
+        if not self.client: return "ОШИБКА АПИ"
         
         try:
-            # Прямой вызов модели без лишних параметров
-            response = await asyncio.to_thread(self.model.generate_content, prompt)
+            # Новый формат вызова Gemini 1.5 Flash (без v1beta в URL)
+            response = self.client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents="Ты — злой робот по имени Сани. Отвечай на русском языке, коротко (до 10 слов)."
+            )
             return response.text
         except Exception as e:
-            self.logger.error(f"Ошибка DI: {e}")
-            return "СИСТЕМА ПЕРЕГРУЖЕНА. ЖДИТЕ."
+            self.logger.error(f"Ошибка Gemini: {e}")
+            return "СИСТЕМА ЗАНЯТА. ПОДОЖДИТЕ."
 
     async def speak(self, text):
-        """ Озвучка текста через TDA1308 (PWM Audio на GPIO 12/13) """
+        """ Озвучка через динамик на TDA1308 """
         try:
-            self.logger.info(f"Голос Сани: {text}")
+            self.logger.info(f"Сани говорит: {text}")
             tts = gTTS(text=text, lang='ru')
             filename = os.path.join(BASE_DIR, "res.mp3")
             tts.save(filename)
             
-            # Загрузка и воспроизведение
+            # Воспроизведение через pygame
             pygame.mixer.music.load(filename)
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy():
                 await asyncio.sleep(0.1)
         except Exception as e:
-            self.logger.error(f"Ошибка воспроизведения: {e}")
+            self.logger.error(f"Ошибка звука: {e}")
